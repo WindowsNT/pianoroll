@@ -1827,6 +1827,27 @@ namespace PR
 
 	public:
 
+		void DestroyBrushes()
+		{
+			WhiteBrush = 0;
+			BlackBrush = 0;
+			SideBrush = 0;
+			ScrollBrush = 0;
+			WhiteBrush = 0;
+			BlackBrush = 0;
+			LineBrush = 0;
+			SnapLineBrush = 0;
+			PartBrush1 = 0;
+			PartBrush2 = 0;
+			NoteBrush1 = 0;
+			NoteBrush2 = 0;
+			NoteBrush3 = 0;
+			NoteBrush4 = 0;
+			WriteFactory = 0;
+			Text = 0;
+
+		}
+
 		void CreateBrushes(ID2D1RenderTarget* p, bool F = false)
 		{
 			if (SideBrush && !F)
@@ -5854,6 +5875,70 @@ namespace PR
 		POSITION XTOPosition(float x)
 		{
 			return MeasureAndBarHitTest(x, true);
+		}
+
+		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel)
+		{
+			CreateBrushes(p);
+			p->FillRectangle(rc, BlackBrush);
+
+			POSITION minp;
+			POSITION maxp;
+			minp.m = 1000000;
+			maxp.m = 0;
+			int MinMidi = 128;
+			int MaxMidi = 0;
+			for (auto& n : notes)
+			{
+				if (n.midi < MinMidi)
+					MinMidi = n.midi;
+				if (n.midi > MaxMidi)
+					MaxMidi = n.midi;
+
+				if (minp > n.p)
+					minp = n.p;
+				if (maxp < n.p)
+					maxp = n.p;
+			}
+			int mididiff = MaxMidi - MinMidi;
+			if (mididiff <= 0)
+				return; 
+
+			ABSPOSITION minap = AbsF(minp);
+			ABSPOSITION maxap = AbsF(maxp);
+			size_t MaxP = maxap.beats - minap.beats;
+
+			float MaxWidth = (rc.right - rc.left) - 20;
+			float MaxHeight = (rc.bottom - rc.top) - 10;
+			float HeightPerMidi = (float)MaxHeight / (float)(mididiff + 1);
+
+			float bw2 = MaxWidth / (MaxP + 1);
+			for (auto& n : notes) 
+			{
+				D2D1_RECT_F r2;
+				
+				// Height
+				// In mididiff , MaxHeight
+				// In zdiff    , ?
+
+				float nm = (float)(n.midi - MinMidi);
+
+				r2.top = rc.bottom - 5 -  HeightPerMidi*(nm + 1);
+				r2.bottom = r2.top + HeightPerMidi/2.0f;
+
+				// Position
+				auto absn = AbsF(n.p);
+				
+				// In MaxP , MaxWidth
+				// In absn , ?
+
+				r2.left = rc.left + 10 + ((MaxWidth*(absn.beats - minap.beats))/(float)MaxP);
+
+				// Duration
+				r2.right = r2.left + (bw2 * DENOM * n.d.r());
+				
+				p->FillRectangle(r2, Sel ? NoteBrush2 : NoteBrush1);
+			}
 		}
 
 		void Paint(ID2D1RenderTarget * p, RECT rc, unsigned long long param = 0)
