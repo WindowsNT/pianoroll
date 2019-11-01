@@ -13,6 +13,11 @@
 	Legato/Staccato
 */
 
+struct VISUALIZATIONPAINTINGPARAMETERS
+{
+	D2D1_COLOR_F bg = { 0,0,0,1 }, fg = { 1,1,1,1 }, sg = { 1,0,0,1 };
+	unsigned long long P = 0;
+};
 
 
 namespace PR
@@ -230,6 +235,28 @@ namespace PR
 		{
 			unsigned long long abs = 0;
 			unsigned long delta = 0;
+			unsigned long long smpl = 0;
+
+
+			unsigned long long ToSamples(int TpB,int BpM,int SR)
+			{
+				if (abs == 0) return 0; //opti
+
+
+				// Ticks per min
+				int TpM = TpB * BpM;
+				//int SRM = SR * 60;
+
+				double dTpM = (double)TpM / 60.0;
+
+				// In SRM samples, TpM ticks
+				// ? samples, abs
+
+				unsigned long long S = (unsigned long long)((double)(SR * abs) / (double)dTpM);
+				return S;
+
+			}
+
 		};
 
 		struct MIDIITEM
@@ -239,7 +266,7 @@ namespace PR
 			DWORD event = 0;
 			char ff = 0;
 			vector<unsigned char> data; // For FF
-
+			std::shared_ptr<void> anydata;
 			bool operator <(const MIDIITEM& m2) const
 			{
 				if (ti.abs < m2.ti.abs)
@@ -356,7 +383,7 @@ namespace PR
 			}
 		}
 
-		unsigned long ReadVarLen(const char* inf, unsigned long& i)
+		unsigned long ReadVarLen(const unsigned char* inf, unsigned long& i)
 		{
 			unsigned long value = 0;
 			unsigned char c = 0;
@@ -398,12 +425,12 @@ namespace PR
 
 	public:
 
-		HRESULT ReadMidi(const char* mididata, size_t midisize,int& tpb,map<int,vector<MIDIITEM>>& r)
+		HRESULT ReadMidi(const unsigned char* mididata, size_t midisize,int& tpb,map<int,vector<MIDIITEM>>& r)
 		{
 			if (!mididata || !midisize)
 				return E_INVALIDARG;
 
-			const char* m = mididata;
+			const  unsigned char* m = mididata;
 
 			// Header
 			if (memcmp(m, "MThd\0\0\0\x06", 8) != 0)
@@ -446,7 +473,7 @@ namespace PR
 				BigToLittle(&TrackSize);
 
 				// Read the track
-				const char* mm = m;
+				const unsigned char* mm = m;
 
 				unsigned long tsi = 0;
 				unsigned char RunningStatus = 0;
@@ -788,11 +815,26 @@ namespace PR
 		{
 			if (f1.d == f2.d)
 				return;
+/*			if (f1.d <= 0 || f2.d <= 0)
+			{
+				f1.d = -10;
+			}
+*/
 			f1.simplify();
 			f2.simplify();
 			auto f1d = f1.d;
 			f1.bmul(f2.d);
 			f2.bmul(f1d);
+
+			if (f1.d < 0 && f2.d < 0)
+			{
+				f1.d = -f1.d;
+				f2.d = -f2.d;
+				f1.n = -f1.n;
+				f2.n = -f1.n;
+			}
+
+
 			return;
 		}
 
@@ -879,7 +921,7 @@ namespace PR
 
 		bool operator <(FRACTION & f)  const
 		{
-			Om(*this, f);
+			Om(*this, f); // Ensures also positive denomiator
 			if (n < f.n)
 				return true;
 			return false;
@@ -1061,6 +1103,15 @@ namespace PR
 				return true;
 			return false;
 		}
+		bool operator >=(const POSITION& p)  const
+		{
+			return !operator <(p);
+		}
+		bool operator <=(const POSITION& p)  const
+		{
+			return !operator >(p);
+		}
+
 	};
 
 	class MARKER
@@ -1133,6 +1184,7 @@ namespace PR
 		int ch = 0;
 		int layer = 0;
 		size_t part = 0;
+		std::shared_ptr<void> any;
 
 		// And a non note event
 		DWORD nonote = 0;
@@ -1447,6 +1499,7 @@ namespace PR
 			float nh = 20.0;
 		};
 
+		public:
 		class TEMPO
 		{
 		public:
@@ -1606,6 +1659,7 @@ namespace PR
 
 		};
 
+		private:
 
 		class DRAWNBEAT
 		{
@@ -1827,6 +1881,11 @@ namespace PR
 
 	public:
 
+		vector<TIME>& GetTimes() {
+			return Times; }
+		vector<TEMPO>& GetTempos() { return Tempos; }
+
+
 		void DestroyBrushes()
 		{
 			WhiteBrush = 0;
@@ -1848,11 +1907,15 @@ namespace PR
 
 		}
 
+		ID2D1RenderTarget* ForBrushes = 0;
 		void CreateBrushes(ID2D1RenderTarget* p, bool F = false)
 		{
+			if (ForBrushes != p)
+				DestroyBrushes();
 			if (SideBrush && !F)
 				return; // OK
 
+			ForBrushes = p;
 			SideBrush = GetD2SolidBrush(p, sidecolor);
 			ScrollBrush = GetD2SolidBrush(p, scrollcolor);
 			WhiteBrush = GetD2SolidBrush(p, whitecolor);
@@ -1939,8 +2002,48 @@ namespace PR
 			CursorSelect = LoadCursor(0, IDC_IBEAM);
 		}
 
+
+		void RemoveDups() 
+		{
+			vector<KEY> nkeys;
+			signed int p = 999;
+			for (auto& k : Keys)
+			{
+				if (k.k == p)
+					continue;
+				p = k.k;
+				nkeys.push_back(k);
+			}
+			Keys = nkeys;
+
+
+			vector<TIME> ntimes;
+			p = 999;
+			for (auto& k : Times)
+			{
+				if (k.nb == p)
+					continue;
+				p = k.nb;
+				ntimes.push_back(k);
+			}
+			Times = ntimes;
+
+			vector<TEMPO> ntempos;
+			p = 999;
+			for (auto& k : Tempos)
+			{
+				if (k.BpM== p)
+					continue;
+				p = k.BpM;
+				ntempos.push_back(k);
+			}
+			Tempos = ntempos;
+		}
+
 		void Ser(XML3::XMLElement& e) const
 		{
+
+			e.vv("FirstNote").SetValueInt(FirstNote);
 
 			// Side Perc
 			e.vv("SideWidth").SetValueInt(side.Width);
@@ -2002,6 +2105,9 @@ namespace PR
 
 		void Unser(XML3::XMLElement& e)
 		{
+
+			FirstNote = e.vv("FirstNote").GetValueInt(48);
+
 			// Side Perc
 			side.Width = e.vv("SideWidth").GetValueInt(150);
 
@@ -2066,7 +2172,7 @@ namespace PR
 			Redraw();
 		}
 
-		void FromMidi(const char* m, size_t sz)
+		void FromMidi(const unsigned char* m, size_t sz,bool TrkToLy = false)
 		{
 			MIDI mm;
 			int tpb = 0;
@@ -2081,7 +2187,7 @@ namespace PR
 			unsigned long long AbsTicks = 0;
 			for (auto& me : mx)
 			{
-//				int ly = me.first;
+				int ly = me.first;
 				auto& v = me.second;
 				for (auto& vv : v)
 				{
@@ -2130,7 +2236,8 @@ namespace PR
 						nx.midi = not;
 						nx.vel = start.noteht;
 						start.noteht = 0;
-
+						if (TrkToLy)
+							nx.layer = ly;
 						nx.p = start;
 						auto a2 = AbsF(start);
 						auto a1 = AbsF(p);
@@ -2144,6 +2251,8 @@ namespace PR
 					if (vv.data.empty())
 					{
 						NOTE nx;
+						if (TrkToLy)
+							nx.layer = ly;
 						nx.nonote = vv.event;
 						nx.midi = 48;
 						nx.p = p;
@@ -2171,6 +2280,8 @@ namespace PR
 							continue;
 						}
 						NOTE nx;
+						if (TrkToLy)
+							nx.layer = ly;
 						nx.midi = 48;
 						nx.p = p;
 						auto p2 = p;
@@ -2368,44 +2479,103 @@ namespace PR
 			return x;
 		}
 
-		void ToMidi(vector<unsigned char>& v, int TPB = 960, std::function<HRESULT(MIDI::MIDIITEM& m)> streamf = nullptr)
+		void Shift(signed int msr = 0,int NewLayer = -1)
+		{
+			if (msr == 0)
+				return;
+			for (auto& k : Times)
+				k.atm += msr;
+			for (auto& k : Keys)
+				k.m += msr;
+			for (auto& k : Tempos)
+				k.atm += msr;
+			for (auto& k : Markers)
+				k.p.m += msr;
+			for (auto& k : notes)
+				k.p.m += msr;
+
+			if (NewLayer >= 0)
+			{
+				for (auto& k : notes) k.layer = NewLayer;
+			}
+		}
+
+		void Append(PR::PIANOROLL& p)
+		{
+			for (auto& k : p.Times)
+				Times.push_back(k);
+			std::sort(Times.begin(), Times.end());
+
+			for (auto& k : p.Keys)
+				Keys.push_back(k);
+			std::sort(Keys.begin(), Keys.end());
+
+			for (auto& k : p.Tempos)
+				Tempos.push_back(k);
+			std::sort(Tempos.begin(), Tempos.end());
+
+			for (auto& k : p.Markers)
+				Markers.push_back(k);
+			std::sort(Markers.begin(), Markers.end());
+
+			for (auto& k : p.notes)
+				notes.push_back(k);
+			std::sort(notes.begin(), notes.end());
+		}
+
+		void ToMidi(vector<unsigned char>& v, int TPB = 960, std::function<HRESULT(MIDI::MIDIITEM& m)> streamf = nullptr, std::vector<MIDI::MIDIITEM>* mmap = 0,int uSR = 0,bool NO = false,std::vector<std::vector<MIDI::MIDIITEM>>* mmore = 0)
 		{
 			MIDI m;
 			map<int, vector<MIDI::MIDIITEM>> s;
 
 
-			// Keys
-			for (auto& k : Keys)
+			if (!NO)
 			{
-				MIDI::MIDIITEM it1;
-				it1.Key(k.k, k.m);
-				POSITION ps;
-				ps.m = k.atm;
-				auto ti = AbsF(ps);
-				it1.ti.abs = ti.ToTpb(TPB);
-				s[0].push_back(it1);
-			}
+				// Keys
+				for (auto& k : Keys)
+				{
+					MIDI::MIDIITEM it1;
+					it1.Key(k.k, k.m);
+					POSITION ps;
+					ps.m = k.atm;
+					auto ti = AbsF(ps);
+					it1.ti.abs = ti.ToTpb(TPB);
+					s[0].push_back(it1);
+				}
 
-			// Tempos
-			for (auto& k : Tempos)
-			{
-				MIDI::MIDIITEM it1;
-				it1.Tempo(k.BpM);
-				POSITION ps;
-				ps.m = k.atm;
-				auto ti = AbsF(ps);
-				it1.ti.abs = ti.ToTpb(TPB);
-				s[0].push_back(it1);
-			}
+				// Tempos
+				for (auto& k : Tempos)
+				{
+					MIDI::MIDIITEM it1;
+					it1.Tempo(k.BpM);
+					POSITION ps;
+					ps.m = k.atm;
+					auto ti = AbsF(ps);
+					it1.ti.abs = ti.ToTpb(TPB);
+					s[0].push_back(it1);
+				}
 
-			// Markers
-			for (auto& mm : Markers)
-			{
-				MIDI::MIDIITEM it1;
-				it1.Marker(mm.t.c_str());
-				auto ti = AbsF(mm.p);
-				it1.ti.abs = ti.ToTpb(TPB);
-				s[0].push_back(it1);
+				// Times
+				for (auto& k : Times)
+				{
+					MIDI::MIDIITEM it1;
+					it1.Time(k.nb, 4);
+					POSITION ps;
+					ps.m = k.atm;
+					auto ti = AbsF(ps);
+					it1.ti.abs = ti.ToTpb(TPB);
+					s[0].push_back(it1);
+				}
+
+				// Markers
+				for (auto& mm : Markers)
+				{
+					MIDI::MIDIITEM it1;
+					it1.Marker(mm.t.c_str());
+					auto ti = AbsF(mm.p);
+					it1.ti.abs = ti.ToTpb(TPB);
+					s[0].push_back(it1);
+				}
 			}
 
 			// Notes
@@ -2422,7 +2592,7 @@ namespace PR
 					it1.ti.abs = 0;
 					auto ti = AbsF(n.p);
 					it1.ti.abs = ti.ToTpb(TPB);
-					if (streamf)
+					if (streamf || uSR)
 						s[0].push_back(it1);
 					else
 						s[n.layer + 1].push_back(it1);
@@ -2440,7 +2610,7 @@ namespace PR
 					auto ti = AbsF(n.p);
 					it1.ti.abs = ti.ToTpb(TPB);
 
-					if (streamf)
+					if (streamf || uSR)
 						s[0].push_back(it1);
 					else
 						s[n.layer + 1].push_back(it1);
@@ -2460,7 +2630,7 @@ namespace PR
 				auto ti = AbsF(n.p);
 				it1.ti.abs = ti.ToTpb(TPB);
 
-				if (streamf)
+				if (streamf || uSR)
 					s[0].push_back(it1);
 				else
 					s[n.layer + 1].push_back(it1);
@@ -2473,7 +2643,7 @@ namespace PR
 				auto ti2 = AbsF(nend);
 				it2.ti.abs = ti2.ToTpb(TPB);
 
-				if (streamf)
+				if (streamf || uSR)
 					s[0].push_back(it2);
 				else
 					s[n.layer + 1].push_back(it2);
@@ -2495,10 +2665,38 @@ namespace PR
 			{
 				sort(ss.second.begin(), ss.second.end());
 			}
+			if (uSR)
+			{
+				for (auto& ss : s)
+				{
+					int b = 120;
+					for (auto& sss : ss.second)
+					{
+						auto te = sss.GetTempo();
+						sss.ti.smpl = sss.ti.ToSamples(TPB, b, uSR);
+						if (te)
+							b = te;
+					}
+				}
+
+			}
 			vector<vector<MIDI::MIDIITEM>> TrackData;
 			for (auto& ss : s)
 			{
 				TrackData.push_back(ss.second);
+			}
+
+			if (mmore)
+			{
+				for (auto& mm : *mmore)
+					TrackData.push_back(mm);
+			}
+
+			if (mmap)
+			{
+				for (auto& ss : s)
+					mmap->insert(mmap->end(),ss.second.begin(),ss.second.end());
+				std::sort(mmap->begin(),mmap->end());
 			}
 			m.Write(1, TPB, TrackData, v);
 		}
@@ -2528,6 +2726,18 @@ namespace PR
 		}
 
 
+		HRESULT EnsureVisible(size_t im)
+		{
+			if (im >= notes.size())
+				return E_INVALIDARG;
+			auto& nn = notes[im];
+			if (nn.dr.left >= rdr.right || nn.dr.right <= rdr.left)
+			{
+				ScrollX = PositionToX(nn.p, true);
+				Redraw();
+			}
+			return S_OK;
+		}
 		HRESULT SelectNote(size_t im,int S)
 		{
 			if (im >= notes.size())
@@ -2548,6 +2758,14 @@ namespace PR
 				c->RedrawRequest(this, p);
 		}
 
+
+		vector<shared_ptr<PIANOROLLCALLBACK>>& Callbacks() { return cb; }
+
+
+		void DestroyCallbacks()
+		{
+			cb.clear();
+		}
 
 		void AddCallback(shared_ptr<PIANOROLLCALLBACK> c)
 		{
@@ -3895,8 +4113,18 @@ namespace PR
 
 		void NormalizePosition(NOTE& n)
 		{
+			if (n.p.f.n < 0 && n.p.f.d < 0)
+			{
+				n.p.f.n = -n.p.f.n;
+				n.p.f.d = -n.p.f.d;
+			}
 			if (n.p.f < 0)
 			{
+				if (n.p.f.n >= 0 && n.p.f.d < 0)
+				{
+					n.p.f.n = -n.p.f.n;
+					n.p.f.d = -n.p.f.d;
+				}
 				for (;;)
 				{
 					if (n.p.f.n >= 0)
@@ -4382,13 +4610,13 @@ namespace PR
 			Redraw();
 		}
 
-		void RightDown(WPARAM, LPARAM ll)
+		void RightDown(WPARAM, LPARAM ll,int ForceSelected = 0,int ForceNotSelected = 0)
 		{
 			auto hp = MeasureAndBarHitTest(LOWORD(ll));
 			LastClick.x = LOWORD(ll);
 			LastClick.y = HIWORD(ll);
 
-			if (InRect(side.full, LastClick.x, LastClick.y))
+			if (!ForceSelected && !ForceNotSelected && InRect(side.full, LastClick.x, LastClick.y))
 			{
 				PianoRight();
 				return;
@@ -4397,6 +4625,8 @@ namespace PR
 			bool S = false;
 			bool Need = false;
 			auto ni = NoteAtPos(LOWORD(ll), HIWORD(ll));
+			if (ForceNotSelected)
+				ni = -1;
 			if (ni != -1)
 			{
 				if (notes[ni].Selected == false)
@@ -4417,6 +4647,8 @@ namespace PR
 				}
 			}
 
+			if (ForceNotSelected)
+				S = false;
 
 			if (S)
 			{
@@ -4453,7 +4685,9 @@ namespace PR
 				AppendMenu(m, MF_STRING, 75, L"Chromatic Transpose\tCtrl+Shift+T");
 				POINT p;
 				GetCursorPos(&p);
-				int tcmd = TrackPopupMenu(m, TPM_CENTERALIGN | TPM_RETURNCMD, p.x, p.y, 0, hParent, 0);
+				int tcmd = ForceSelected;
+				if (tcmd == 0)
+					tcmd = TrackPopupMenu(m, TPM_CENTERALIGN | TPM_RETURNCMD, p.x, p.y, 0, hParent, 0);
 				DestroyMenu(m);
 				if (tcmd == 1)
 				{
@@ -4727,7 +4961,9 @@ namespace PR
 
 				POINT p;
 				GetCursorPos(&p);
-				int tcmd = TrackPopupMenu(m, TPM_CENTERALIGN | TPM_RETURNCMD, p.x, p.y, 0, hParent, 0);
+				int tcmd = ForceNotSelected;
+				if (tcmd == 0)
+					tcmd = TrackPopupMenu(m, TPM_CENTERALIGN | TPM_RETURNCMD, p.x, p.y, 0, hParent, 0);
 				DestroyMenu(m);
 /*				if (tcmd ==  999)
 					{
@@ -4806,7 +5042,7 @@ namespace PR
 				if (tcmd == 6)
 				{
 					swprintf_s(re, L"%i", NextLayer + 1);
-					if (!AskText(hParent, L"Layer", L"Enter layer:", re))
+					if (!AskText(hParent, L"Layer", L"Enter layer (You can also use the keypad 1-9 to select the layer, and alt+keypad to toggle layer visibility):", re))
 						return;
 					NextLayer = _wtoi(re) - 1;
 					if (NextLayer < 0)
@@ -5877,17 +6113,15 @@ namespace PR
 			return MeasureAndBarHitTest(x, true);
 		}
 
-		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel)
+		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel,bool Mut, VISUALIZATIONPAINTINGPARAMETERS* vpp = 0)
 		{
 			CreateBrushes(p);
-			p->FillRectangle(rc, BlackBrush);
+			//p->FillRectangle(rc, BlackBrush);
 
-			POSITION minp;
-			POSITION maxp;
-			minp.m = 1000000;
-			maxp.m = 0;
 			int MinMidi = 128;
 			int MaxMidi = 0;
+			size_t MinBeats = 100000;
+			size_t MaxBeats = 0;
 			for (auto& n : notes)
 			{
 				if (n.midi < MinMidi)
@@ -5895,24 +6129,28 @@ namespace PR
 				if (n.midi > MaxMidi)
 					MaxMidi = n.midi;
 
-				if (minp > n.p)
-					minp = n.p;
-				if (maxp < n.p)
-					maxp = n.p;
+				ABSPOSITION a = AbsF(n.p);
+				if (MinBeats > a.beats)
+					MinBeats = a.beats;
+
+				size_t abeatsd = (size_t)(a.beats + (n.d.r() * DENOM));
+
+				if (MaxBeats < abeatsd)
+					MaxBeats = abeatsd;
+
+
 			}
 			int mididiff = MaxMidi - MinMidi;
 			if (mididiff <= 0)
 				return; 
+			size_t MaxP = MaxBeats - MinBeats;
 
-			ABSPOSITION minap = AbsF(minp);
-			ABSPOSITION maxap = AbsF(maxp);
-			size_t MaxP = maxap.beats - minap.beats;
-
-			float MaxWidth = (rc.right - rc.left) - 20;
+			float MaxWidth = (rc.right - rc.left);
 			float MaxHeight = (rc.bottom - rc.top) - 10;
 			float HeightPerMidi = (float)MaxHeight / (float)(mididiff + 1);
 
-			float bw2 = MaxWidth / (MaxP + 1);
+			float WidthPerBeat = (float)MaxWidth / (float)MaxP;
+
 			for (auto& n : notes) 
 			{
 				D2D1_RECT_F r2;
@@ -5932,12 +6170,25 @@ namespace PR
 				// In MaxP , MaxWidth
 				// In absn , ?
 
-				r2.left = rc.left + 10 + ((MaxWidth*(absn.beats - minap.beats))/(float)MaxP);
+				float bm = (float)(absn.beats - MinBeats);
+				r2.left = rc.left + WidthPerBeat * bm;
 
 				// Duration
-				r2.right = r2.left + (bw2 * DENOM * n.d.r());
+				float bmx = (n.d.r() * DENOM);
+				r2.right = r2.left + (WidthPerBeat * bmx);
 				
-				p->FillRectangle(r2, Sel ? NoteBrush2 : NoteBrush1);
+				auto br = NoteBrush1;
+				if (Mut)
+					br = NoteBrush3;
+				if (Sel)
+				{
+					br = NoteBrush2;
+					if (Mut)
+						br = NoteBrush4;
+				}
+				if (vpp && n.Selected)
+					br = NoteBrush2;
+				p->FillRectangle(r2, br);
 			}
 		}
 

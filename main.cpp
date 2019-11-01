@@ -317,7 +317,7 @@ LRESULT CALLBACK Main_DP(HWND hh, UINT mm, WPARAM ww, LPARAM ll)
 			DWORD A = 0;
 			ReadFile(hF, d2.data(), li.LowPart, &A, 0);
 			CloseHandle(hF);
-			prx.FromMidi(d2.data(), d2.size());
+			prx.FromMidi((unsigned char*)d2.data(), d2.size());
 		}
 
 
