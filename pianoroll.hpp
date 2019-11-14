@@ -17,6 +17,8 @@ struct VISUALIZATIONPAINTINGPARAMETERS
 {
 	D2D1_COLOR_F bg = { 0,0,0,1 }, fg = { 1,1,1,1 }, sg = { 1,0,0,1 };
 	unsigned long long P = 0;
+	void* ae = 0;
+	void* part = 0;
 };
 
 
@@ -237,7 +239,6 @@ namespace PR
 			unsigned long delta = 0;
 			unsigned long long smpl = 0;
 
-
 			unsigned long long ToSamples(int TpB,int BpM,int SR)
 			{
 				if (abs == 0) return 0; //opti
@@ -264,6 +265,7 @@ namespace PR
 			size_t stridx = 0;
 			MIDITIME ti;
 			DWORD event = 0;
+			int sfpreset = 0;
 			char ff = 0;
 			vector<unsigned char> data; // For FF
 			std::shared_ptr<void> anydata;
@@ -1182,6 +1184,7 @@ namespace PR
 		FRACTION d;
 		int vel = 127;
 		int ch = 0;
+		int preset = 0;
 		int layer = 0;
 		size_t part = 0;
 		std::shared_ptr<void> any;
@@ -1204,6 +1207,7 @@ namespace PR
 			e.vv("v").SetValueInt(vel);
 			e.vv("m").SetValueInt(midi);
 			e.vv("p").SetValueULongLong(part);
+			e.vv("pr").SetValueInt(preset);
 
 			if (HasMetaEvent)
 			{
@@ -1223,6 +1227,7 @@ namespace PR
 			midi = e.vv("m").GetValueInt();
 			nonote = e.vv("e").GetValueUInt();
 			part = e.vv("p").GetValueULongLong(0);
+			preset = e.vv("pr").GetValueInt(0);
 
 			HasMetaEvent = e.vv("f1").GetValueUInt(0);
 			if (HasMetaEvent)
@@ -1784,6 +1789,7 @@ namespace PR
 		int BarMoving = false;
 		int Selecting = false;
 		int NextChannel = 0;
+		int NextPreset = 0;
 		int NextLayer = 0;
 		int NextPart = 0;
 		shared_ptr<NOTE> GroupDragging = 0;
@@ -1885,6 +1891,14 @@ namespace PR
 			return Times; }
 		vector<TEMPO>& GetTempos() { return Tempos; }
 
+		stack<vector<NOTE>>& GetUndoStack() { return undo; }
+		stack<vector<NOTE>>& GetRedoStack() { return redo; }
+
+		void ClearUR()
+		{
+			undo = {};
+			redo = {};
+		}
 
 		void DestroyBrushes()
 		{
@@ -2585,6 +2599,7 @@ namespace PR
 				if (n.HasMetaEvent)
 				{
 					MIDI::MIDIITEM it1;
+					it1.sfpreset = n.preset;
 					it1.stridx = in;
 					it1.event = 0;
 					it1.ff = n.MetaEvent;
@@ -2603,6 +2618,7 @@ namespace PR
 					MIDI::MIDIITEM it1;
 					it1.stridx = in;
 					it1.event = 0;
+					it1.sfpreset = n.preset;
 					it1.event = n.nonote;
 					it1.ti.abs = 0;
 
@@ -2619,6 +2635,7 @@ namespace PR
 
 				MIDI::MIDIITEM it1; 
 				it1.stridx = in;
+				it1.sfpreset = n.preset;
 				it1.event = 0;
 				it1.event = 0x90;
 				it1.event |= n.ch;
@@ -2638,6 +2655,7 @@ namespace PR
 				MIDI::MIDIITEM it2; 
 				it2.stridx = in;
 				it2.event = it1.event;
+				it2.sfpreset = it1.sfpreset;
 				it2.event &= 0xFFFF;
 				auto nend = n.EndX();
 				auto ti2 = AbsF(nend);
@@ -3295,7 +3313,7 @@ namespace PR
 
 			if (ww == VK_UP || ww == VK_DOWN)
 			{
-				if (Shift)
+				if (Shift && !Alt)
 				{
 					bool R = false;
 					for (size_t i = 0; i < notes.size(); i++)
@@ -3317,11 +3335,18 @@ namespace PR
 							notes[i].ch = 0;
 
 					}
+					if (!R)
+					{
+						if (ww == VK_UP && NextChannel < 15)
+							NextChannel++;
+						if (ww == VK_DOWN && NextChannel > 0)
+							NextChannel--;
+					}
 					if (R)
 						Redraw();
 					return;
 				}
-				if (Alt)
+				if (Alt && !Shift)
 				{
 					bool R = false;
 					for (size_t i = 0; i < notes.size(); i++)
@@ -3338,6 +3363,39 @@ namespace PR
 
 						if (notes[i].layer < 0)
 							notes[i].layer = 0;
+					}
+					if (R)
+						Redraw();
+					return;
+				}
+				if (Shift && Alt)
+				{
+					bool R = false;
+					for (size_t i = 0; i < notes.size(); i++)
+					{
+						if (!SelN(i))
+							continue;
+						if (notes[i].layer != NextLayer)
+							continue;
+
+						if (!R)
+							PushUndo();
+						R = true;
+						if (ww == VK_UP)
+							notes[i].preset++;
+						if (ww == VK_DOWN)
+							notes[i].preset--;
+
+						if (notes[i].preset < 0)
+							notes[i].preset = 0;
+
+					}
+					if (!R)
+					{
+						if (ww == VK_UP)
+							NextPreset++;
+						if (ww == VK_DOWN && NextPreset > 0)
+							NextPreset--;
 					}
 					if (R)
 						Redraw();
@@ -4626,7 +4684,7 @@ namespace PR
 			bool Need = false;
 			auto ni = NoteAtPos(LOWORD(ll), HIWORD(ll));
 			if (ForceNotSelected)
-				ni = -1;
+				ni = (size_t)-1;
 			if (ni != -1)
 			{
 				if (notes[ni].Selected == false)
@@ -4671,6 +4729,9 @@ namespace PR
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
 				AppendMenu(m, MF_STRING, 17, L"Layer Down\tAlt+Down");
 				AppendMenu(m, MF_STRING, 18, L"Layer Up\tAlt+Up");
+				AppendMenu(m, MF_SEPARATOR, 0, L"");
+				AppendMenu(m, MF_STRING, 117, L"SF Preset Down\tShift+Alt+Down");
+				AppendMenu(m, MF_STRING, 118, L"SF Preset Up\tShift+Alt+Up");
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
 				AppendMenu(m, MF_STRING, 13, L"Expand\t/");
 				AppendMenu(m, MF_STRING, 14, L"Reduce\t\\");
@@ -4773,6 +4834,14 @@ namespace PR
 				{
 					KeyDown(VK_UP, 0, 0,0,true);
 				}
+				if (tcmd == 117)
+				{
+					KeyDown(VK_DOWN,true, 0, true, true);
+				}
+				if (tcmd == 118)
+				{
+					KeyDown(VK_UP, true, 0, true, true);
+				}
 				if (tcmd == 21)
 				{
 					// Velocity entry
@@ -4873,7 +4942,7 @@ namespace PR
 					auto mx = CreatePopupMenu();
 					AppendMenu(mx, MF_STRING, 121, L"Velocities");
 					AppendMenu(mx, MF_STRING, 122, L"Channels");
-					AppendMenu(mx, MF_STRING, 123, L"Layers");
+					AppendMenu(mx, MF_STRING, 123, L"Layers/Presets");
 					AppendMenu(mx, MF_STRING, 125, L"Live Notes");
 					AppendMenu(mx, MF_SEPARATOR, 0, L"");
 					AppendMenu(mx, MF_STRING, 124, L"Go to measure...\tCtrl+G");
@@ -4940,6 +5009,25 @@ namespace PR
 				AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)m4, L"Next Note size");
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
 				
+				auto m6 = CreatePopupMenu();
+				swprintf_s(re, L"Up\tShift+Up");
+				AppendMenu(m6, MF_STRING, 771, re);
+				swprintf_s(re, L"Down\tShift+Down");
+				AppendMenu(m6, MF_STRING, 772, re);
+				swprintf_s(re, L"Set next channel (Current: %i)\t", NextChannel + 1);
+				AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)m6, re);
+				auto m7 = CreatePopupMenu();
+				swprintf_s(re, L"Up\tShift+Alt+Up");
+				AppendMenu(m7, MF_STRING, 773, re);
+				swprintf_s(re, L"Down\tShift+Alt+Down");
+				AppendMenu(m7, MF_STRING, 774, re);
+				if(NextPreset == 0)
+					swprintf_s(re, L"Set next soundfont preset (Current: Default)");
+				else
+					swprintf_s(re, L"Set next soundfont preset (Current: %i)", NextPreset);
+				AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)m7, re);
+				AppendMenu(m, MF_SEPARATOR, 0, L"");
+
 
 				if (true)
 				{
@@ -4965,6 +5053,25 @@ namespace PR
 				if (tcmd == 0)
 					tcmd = TrackPopupMenu(m, TPM_CENTERALIGN | TPM_RETURNCMD, p.x, p.y, 0, hParent, 0);
 				DestroyMenu(m);
+
+				if (tcmd == 771 && NextChannel < 15)
+				{
+					NextChannel++;
+				}
+				if (tcmd == 772 && NextChannel > 0)
+				{
+					NextChannel--;
+				}
+				if (tcmd == 773)
+				{
+					NextPreset++;
+				}
+				if (tcmd == 774 && NextPreset > 0)
+				{
+					NextPreset--;
+				}
+
+
 /*				if (tcmd ==  999)
 					{
 					SpecialSelectionDP(hParent);
@@ -5465,6 +5572,7 @@ namespace PR
 					{
 						nx.nonote = 0x7F00A0;
 						nx.nonote |= NextChannel;
+						nx.preset = NextPreset;
 						nx.nonote |= (e2 << 8);
 					}
 					else
@@ -5518,6 +5626,7 @@ namespace PR
 				if (!U)
 					PushUndo();
 				U = true;
+				nx.preset = NextPreset;
 				nx.ch = NextChannel;
 				nx.layer = NextLayer;
 				nx.part = NextPart;
@@ -6112,85 +6221,8 @@ namespace PR
 		{
 			return MeasureAndBarHitTest(x, true);
 		}
+		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel, bool Mut, VISUALIZATIONPAINTINGPARAMETERS* vpp = 0);
 
-		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel,bool Mut, VISUALIZATIONPAINTINGPARAMETERS* vpp = 0)
-		{
-			CreateBrushes(p);
-			//p->FillRectangle(rc, BlackBrush);
-
-			int MinMidi = 128;
-			int MaxMidi = 0;
-			size_t MinBeats = 100000;
-			size_t MaxBeats = 0;
-			for (auto& n : notes)
-			{
-				if (n.midi < MinMidi)
-					MinMidi = n.midi;
-				if (n.midi > MaxMidi)
-					MaxMidi = n.midi;
-
-				ABSPOSITION a = AbsF(n.p);
-				if (MinBeats > a.beats)
-					MinBeats = a.beats;
-
-				size_t abeatsd = (size_t)(a.beats + (n.d.r() * DENOM));
-
-				if (MaxBeats < abeatsd)
-					MaxBeats = abeatsd;
-
-
-			}
-			int mididiff = MaxMidi - MinMidi;
-			if (mididiff <= 0)
-				return; 
-			size_t MaxP = MaxBeats - MinBeats;
-
-			float MaxWidth = (rc.right - rc.left);
-			float MaxHeight = (rc.bottom - rc.top) - 10;
-			float HeightPerMidi = (float)MaxHeight / (float)(mididiff + 1);
-
-			float WidthPerBeat = (float)MaxWidth / (float)MaxP;
-
-			for (auto& n : notes) 
-			{
-				D2D1_RECT_F r2;
-				
-				// Height
-				// In mididiff , MaxHeight
-				// In zdiff    , ?
-
-				float nm = (float)(n.midi - MinMidi);
-
-				r2.top = rc.bottom - 5 -  HeightPerMidi*(nm + 1);
-				r2.bottom = r2.top + HeightPerMidi/2.0f;
-
-				// Position
-				auto absn = AbsF(n.p);
-				
-				// In MaxP , MaxWidth
-				// In absn , ?
-
-				float bm = (float)(absn.beats - MinBeats);
-				r2.left = rc.left + WidthPerBeat * bm;
-
-				// Duration
-				float bmx = (n.d.r() * DENOM);
-				r2.right = r2.left + (WidthPerBeat * bmx);
-				
-				auto br = NoteBrush1;
-				if (Mut)
-					br = NoteBrush3;
-				if (Sel)
-				{
-					br = NoteBrush2;
-					if (Mut)
-						br = NoteBrush4;
-				}
-				if (vpp && n.Selected)
-					br = NoteBrush2;
-				p->FillRectangle(r2, br);
-			}
-		}
 
 		void Paint(ID2D1RenderTarget * p, RECT rc, unsigned long long param = 0)
 		{
@@ -6601,6 +6633,8 @@ namespace PR
 					}
 
 					swprintf_s(ly, 100, L"%u", n.layer + 1);
+					if (n.preset != 0)
+						swprintf_s(ly, 100, L"(%u,%u)", n.layer + 1,n.preset);
 					Text->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
 					Text->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 					p->DrawTextW(ly, (UINT32)wcslen(ly), Text, f4, BlackBrush);
