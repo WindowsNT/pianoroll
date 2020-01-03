@@ -17,8 +17,10 @@ struct VISUALIZATIONPAINTINGPARAMETERS
 {
 	D2D1_COLOR_F bg = { 0,0,0,1 }, fg = { 1,1,1,1 }, sg = { 1,0,0,1 };
 	unsigned long long P = 0;
+	unsigned long long EP = 0;
 	void* ae = 0;
 	void* part = 0;
+	int Mode = 0; // 0 Video export, 1 Play
 };
 
 
@@ -269,6 +271,7 @@ namespace PR
 			char ff = 0;
 			vector<unsigned char> data; // For FF
 			std::shared_ptr<void> anydata;
+			char VST3Event[48] = {};
 			bool operator <(const MIDIITEM& m2) const
 			{
 				if (ti.abs < m2.ti.abs)
@@ -411,7 +414,7 @@ namespace PR
 			*t = nf;
 		}
 
-		void MIDI::BigToLittle(unsigned long* t)
+		void BigToLittle(unsigned long* t)
 		{
 			unsigned long f = *t;
 			unsigned char c0 = (unsigned char)(f >> 24);
@@ -427,7 +430,7 @@ namespace PR
 
 	public:
 
-		HRESULT ReadMidi(const unsigned char* mididata, size_t midisize,int& tpb,map<int,vector<MIDIITEM>>& r)
+		HRESULT ReadMidi(const unsigned char* mididata, size_t midisize,int& tpb,map<int,vector<MIDIITEM>>& r,int* pm = 0)
 		{
 			if (!mididata || !midisize)
 				return E_INVALIDARG;
@@ -563,6 +566,8 @@ namespace PR
 					}
 				m += TrackSize;
 				}
+			if (pm)
+				*pm = m - mididata;
 			return S_OK;
 		}
 
@@ -1197,6 +1202,9 @@ namespace PR
 		unsigned char MetaEvent = 0;
 		vector<unsigned char> MetaEventData;
 
+		// And VST 3.5 events
+		float VST35_Pressure = 0.0f;
+
 		D2D1_RECT_F dr;
 
 		void Ser(XML3::XMLElement& e) const
@@ -1255,6 +1263,10 @@ namespace PR
 			if (p < n2.p)
 				return true;
 			if (p > n2.p)
+				return false;
+			if (nonote && !n2.nonote)
+				return true;
+			if (!nonote && n2.nonote)
 				return false;
 			if (midi < n2.midi)
 				return true;
@@ -1825,6 +1837,39 @@ namespace PR
 		POSITION MidiInInsert;
 		vector<int> MidiInsCurrent;
 		NOTE MidiInsNote1;
+		
+
+		void PushUndo()
+		{
+			undo.push(notes);
+			redo = stack<vector<NOTE>>();
+		}
+
+		template <typename T = float> bool InRect(D2D1_RECT_F & r, T x, T y)
+		{
+			if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)
+				return true;
+			return false;
+		}
+
+		DRAWNMEASURESANDBEATS* DrawnMeasureByIndex(size_t idx)
+		{
+			auto e = std::find_if(DrawnMeasures.begin(), DrawnMeasures.end(), [&](const DRAWNMEASURESANDBEATS & m) -> BOOL
+				{
+					if (m.im == idx)
+						return true;
+					return false;
+				});
+			if (e == DrawnMeasures.end())
+				return nullptr;
+			return &*e;
+		}
+
+
+
+	public:
+
+
 		void InsertNoteFromMidiIn(DWORD e)
 		{
 			if (IsNoteOn(e))
@@ -1856,36 +1901,6 @@ namespace PR
 
 			}
 		}
-
-		void PushUndo()
-		{
-			undo.push(notes);
-			redo = stack<vector<NOTE>>();
-		}
-
-		template <typename T = float> bool InRect(D2D1_RECT_F & r, T x, T y)
-		{
-			if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)
-				return true;
-			return false;
-		}
-
-		DRAWNMEASURESANDBEATS* DrawnMeasureByIndex(size_t idx)
-		{
-			auto e = std::find_if(DrawnMeasures.begin(), DrawnMeasures.end(), [&](const DRAWNMEASURESANDBEATS & m) -> BOOL
-				{
-					if (m.im == idx)
-						return true;
-					return false;
-				});
-			if (e == DrawnMeasures.end())
-				return nullptr;
-			return &*e;
-		}
-
-
-
-	public:
 
 		vector<TIME>& GetTimes() {
 			return Times; }
@@ -1922,7 +1937,7 @@ namespace PR
 		}
 
 		ID2D1RenderTarget* ForBrushes = 0;
-		void CreateBrushes(ID2D1RenderTarget* p, bool F = false)
+		void CreateBrushes(ID2D1RenderTarget* p, D2D1_COLOR_F* utc,bool F)
 		{
 			if (ForBrushes != p)
 				DestroyBrushes();
@@ -1938,10 +1953,30 @@ namespace PR
 			SnapLineBrush = GetD2SolidBrush(p, snaplinecolor);
 			PartBrush1 = GetD2SolidBrush(p, part1color);
 			PartBrush2 = GetD2SolidBrush(p, part2color);
-			NoteBrush1 = GetD2SolidBrush(p, note1color);
-			NoteBrush2 = GetD2SolidBrush(p, note2color);
-			NoteBrush3 = GetD2SolidBrush(p, note3color);
-			NoteBrush4 = GetD2SolidBrush(p, note4color);
+
+			if (utc)
+			{
+				// br 1 = normal nm
+				// br 2 = normal mt
+				// br 3 = sel nm
+				// br 4 = sel m
+				D2D1_COLOR_F col = *utc;
+				col.a = 0.80f;
+				NoteBrush2 = GetD2SolidBrush(p, col);
+				col.a = 0.60f;
+				NoteBrush1 = GetD2SolidBrush(p, col);
+				col.a = 0.40f;
+				NoteBrush4 = GetD2SolidBrush(p, col);
+				col.a = 0.20f;
+				NoteBrush3 = GetD2SolidBrush(p, col);
+			}
+			else
+			{
+				NoteBrush1 = GetD2SolidBrush(p, note1color);
+				NoteBrush2 = GetD2SolidBrush(p, note2color);
+				NoteBrush3 = GetD2SolidBrush(p, note3color);
+				NoteBrush4 = GetD2SolidBrush(p, note4color);
+			}
 
 			DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown * *)& WriteFactory);
 
@@ -2596,6 +2631,29 @@ namespace PR
 			for (size_t in = 0 ; in < notes.size() ; in++)
 			{
 				auto& n = notes[in];
+#ifdef TURBO_PLAY
+				bool GetVST35EventForPianoRoll(NOTE&n,std::vector<MIDI::MIDIITEM>& it);
+				std::vector<MIDI::MIDIITEM> v35x;
+				if (GetVST35EventForPianoRoll(n, v35x))
+				{
+					for (auto& v35 : v35x)
+					{
+						v35.sfpreset = n.preset;
+						v35.stridx = in;
+						v35.event = 0;
+						auto ti = AbsF(n.p);
+						v35.ti.abs = ti.ToTpb(TPB);
+						if (streamf || uSR)
+							s[0].push_back(v35);
+						else
+							s[n.layer + 1].push_back(v35);
+					}
+				}
+#endif
+				if (n.VST35_Pressure > 0)
+				{
+
+				}
 				if (n.HasMetaEvent)
 				{
 					MIDI::MIDIITEM it1;
@@ -3086,7 +3144,7 @@ namespace PR
 			return d;
 		}
 
-		signed int PitchShift(DWORD ev)
+		static signed int PitchShift(DWORD ev)
 		{
 			ev >>= 8;
 			ev &= 0xFFFF;
@@ -3098,7 +3156,7 @@ namespace PR
 			return g;
 		}
 
-		int PitchShiftR(int b)
+		static int PitchShiftR(int b)
 		{
 			int low7 = b & 0x7F;
 			b >>= 7;
@@ -4744,12 +4802,54 @@ namespace PR
 				AppendMenu(m, MF_STRING, 66, L"Quantize\tCtrl+Q");
 				AppendMenu(m, MF_STRING, 74, L"Diatonic Transpose\tCtrl+T");
 				AppendMenu(m, MF_STRING, 75, L"Chromatic Transpose\tCtrl+Shift+T");
+				AppendMenu(m, MF_SEPARATOR, 0, L"");
+				auto m2 = CreatePopupMenu();
+				AppendMenu(m, MF_STRING | MF_POPUP, (UINT_PTR)m2, L"VST 3.5 Expressions");
+				AppendMenu(m2, MF_STRING, 201, L"Pressure");
+
+
 				POINT p;
 				GetCursorPos(&p);
 				int tcmd = ForceSelected;
 				if (tcmd == 0)
 					tcmd = TrackPopupMenu(m, TPM_CENTERALIGN | TPM_RETURNCMD, p.x, p.y, 0, hParent, 0);
 				DestroyMenu(m);
+
+				if (tcmd == 201)
+				{
+
+					vector<wchar_t> re(1000);
+					if (!AskText(hParent, L"Pressure", L"Enter pressure (0.0 -  1.0):", re.data()))
+						return;
+
+					float val = _wtof(re.data());
+					if (val < 0 || val > 1)
+						val = 0;
+
+					bool R = false, U = false;
+					for (auto& n : notes)
+					{
+						if (n.layer != NextLayer)
+							continue;
+						if (n.Selected || n.PartSelected(parts))
+						{
+							NOTE nn = n;
+							nn.VST35_Pressure = val;
+							for (auto c : cb)
+							{
+								if (FAILED(c->OnNoteChange(this, &n, &nn)))
+									return;
+							}
+							if (!U)
+								PushUndo();
+							U = true;
+							R = true;
+							n.VST35_Pressure = nn.VST35_Pressure;
+						}
+					}
+					if (R)
+						Redraw();
+				}
 				if (tcmd == 1)
 				{
 					KeyDown(VK_DELETE, 0);
@@ -4836,11 +4936,11 @@ namespace PR
 				}
 				if (tcmd == 117)
 				{
-					KeyDown(VK_DOWN,true, 0, true, true);
+					KeyDown(VK_DOWN,true, true, false, true);
 				}
 				if (tcmd == 118)
 				{
-					KeyDown(VK_UP, true, 0, true, true);
+					KeyDown(VK_UP, true, true, false, true);
 				}
 				if (tcmd == 21)
 				{
@@ -5272,6 +5372,49 @@ namespace PR
 			return Need;
 		}
 
+
+		void Wheel(WPARAM ww, float x, float y)
+		{
+			bool Shift = GetKeyState(VK_SHIFT) >> 16;
+			signed short HW = HIWORD(ww);
+			for (size_t i = 0; i < notes.size(); i++)
+			{
+				if (InRect(notes[i].dr, x, y))
+				{
+					auto& b = notes[i];
+					if (Shift)
+					{
+						if (HW > 0)
+							b.vel += 10;
+						if (HW < 0)
+							b.vel -= 10;
+					}
+					else
+					{
+						if (HW > 0)
+							b.vel += 5;
+						if (HW < 0)
+							b.vel -= 5;
+					}
+					if (b.vel >= 127)
+						b.vel = 127;
+					if (b.vel < 1)
+						b.vel = 1;
+					Redraw();
+					return;
+				}
+			}
+			// Down/Up
+			if (!Shift)
+			{
+				if (HW < 0)
+					KeyDown(VK_DOWN);
+				else
+					KeyDown(VK_UP);
+			}
+		}
+
+
 		void LeftDown(WPARAM ww, LPARAM ll)
 		{
 			bool Shift = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0);
@@ -5438,7 +5581,7 @@ namespace PR
 			int xx = LOWORD(ll);
 			int yy = HIWORD(ll);
 
-			if (InRect(side.full, xx, yy))
+			if (InRect(side.full, xx, yy) && !fromMidi)
 			{
 				return;
 			}
@@ -5730,7 +5873,7 @@ namespace PR
 
 		void PaintSide(ID2D1RenderTarget * p, RECT rc)
 		{
-			CreateBrushes(p);
+			CreateBrushes(p,0,0);
 			// dirx  0 left 1 right
 			DrawnPiano.clear();
 			// Full
@@ -6221,13 +6364,13 @@ namespace PR
 		{
 			return MeasureAndBarHitTest(x, true);
 		}
-		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel, bool Mut, VISUALIZATIONPAINTINGPARAMETERS* vpp = 0);
+		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel, bool Mut, D2D1_COLOR_F* utc, VISUALIZATIONPAINTINGPARAMETERS* vpp = 0);
 
 
 		void Paint(ID2D1RenderTarget * p, RECT rc, unsigned long long param = 0)
 		{
 			rdr = rc;
-			CreateBrushes(p);
+			CreateBrushes(p,0,0);
 
 			if (PianoOnly == 1)
 			{
@@ -6327,6 +6470,8 @@ namespace PR
 			for (size_t m = 0; ; m++)
 			{
 				auto time = TimeAtMeasure(m);
+				if (time.atm == 0 && m > 100)
+					break;
 				bool WasDrown = false;
 				DRAWNMEASURESANDBEATS dd;
 				dd.im = m;
