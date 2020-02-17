@@ -42,17 +42,38 @@ void PlayThread()
 
 			if (e == 0)
 				break;
-			//	e |= (0x7F << 16);
-	//	e |= m << 8;
 			midiOutShortMsg(mIN, e);
+			if ((e & 0xF0) == 0xE0)
+				continue;
 			Sleep(slp);
 			e &= 0x00FFFF;
 			midiOutShortMsg(mIN, e);
 		}
 	}
 }
-void Play(int m, int vel = 0x7F)
+void Play(int m, int vel,int micro)
 {
+	if (micro)
+	{
+		// 1000s after Midi note 0
+		float fr = 16.35f * pow(2.0f, micro / 12000.0f);
+		auto e = FrequencyToMidi(fr);
+		q.writelock([&](queue<DWORD>& qq) {
+
+			DWORD ps = 0x0000E0;
+			ps |= std::get<1>(e) << 16;
+			ps |= std::get<2>(e) << 8;
+			qq.push(ps);
+
+			DWORD ee = 0x000090;
+			ee |= (vel << 16);
+			ee |= std::get<0>(e) << 8;
+
+			qq.push(ee);
+			});
+		SetEvent(hEv);
+		return;
+	}
 	DWORD e = 0x000090;
 	e |= (vel << 16);
 	e |= m << 8;
@@ -73,7 +94,7 @@ public:
 	{
 		if (n->nonote > 0 || n->HasMetaEvent)
 			return S_FALSE;
-		Play(n->midi, n->vel);
+		Play(n->midi, n->vel,n->micro);
 		return S_OK;
 	}
 	virtual HRESULT NoteRemoved(PIANOROLL*, NOTE*)
@@ -90,11 +111,11 @@ public:
 	}
 	virtual HRESULT OnNoteChange(PIANOROLL*, NOTE* n1, NOTE* n2)
 	{
-		if (n1->midi != n2->midi || n1->vel != n2->vel)
+		if (n1->midi != n2->midi || n1->vel != n2->vel || n1->micro != n2->micro)
 		{
 			if (n2->nonote > 0 || n2->HasMetaEvent)
 				return S_FALSE;
-			Play(n2->midi, n2->vel);
+			Play(n2->midi, n2->vel,n2->micro);
 		}
 		return S_OK;
 	}
@@ -104,7 +125,7 @@ public:
 			return S_OK;
 		if (n->nonote > 0 || n->HasMetaEvent)
 			return S_FALSE;
-		Play(n->midi, n->vel);
+		Play(n->midi, n->vel,n->micro);
 		return S_OK;
 	}
 	virtual void OnPianoOn(PIANOROLL*, int n,int vel,int ch)

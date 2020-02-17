@@ -1,6 +1,6 @@
 # Pianoroll for Windows 
 
-A flexible, featured pianoroll control, using Direct2D to paint.
+A flexible, featured pianoroll control with microtunal support, using Direct2D to paint.
 ![	Pianoroll](https://raw.githubusercontent.com/WindowsNT/pianoroll/master/1.jpg)
 
 Article:
@@ -40,6 +40,7 @@ https://www.codeproject.com/Articles/4042343/A-flexible-Direct2D-Pianoroll-for-y
 * Event streaming to callback
 * Live note viewer
 * Part editing mode
+* Microtunal support (documentation soon)
 
 ## Callbacks
 Your callbacks are notified when:

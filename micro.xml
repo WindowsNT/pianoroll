@@ -1,0 +1,64 @@
+﻿<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<e FirstNote="53" FirstNoteMTIndex="0" SideWidth="120" ViewLayers="1" ViewVelocity="1" ViewChannels="1">
+	<mt>
+		<n v="0"/>
+		<n v="6"/>
+		<n v="18"/>
+		<n v="6"/>
+		<n v="12"/>
+		<n v="6"/>
+		<n v="18"/>
+		<n v="6"/>
+	</mt>
+	<notes>
+		<n e="0" l="0" c="0" v="127" m="21" mt="36000" p="0" pr="0">
+			<pos m="0" n="0" d="4"/>
+			<dur n="1" d="4"/>
+		</n>
+		<n e="0" l="0" c="0" v="127" m="22" mt="37000" p="0" pr="0">
+			<pos m="0" n="1" d="4"/>
+			<dur n="1" d="4"/>
+		</n>
+		<n e="0" l="0" c="0" v="127" m="23" mt="40000" p="0" pr="0">
+			<pos m="0" n="2" d="4"/>
+			<dur n="1" d="4"/>
+		</n>
+		<n e="0" l="0" c="0" v="127" m="24" mt="41000" p="0" pr="0">
+			<pos m="0" n="3" d="4"/>
+			<dur n="1" d="4"/>
+		</n>
+		<n e="0" l="0" c="0" v="127" m="25" mt="43000" p="0" pr="0">
+			<pos m="1" n="0" d="4"/>
+			<dur n="1" d="4"/>
+		</n>
+		<n e="0" l="0" c="0" v="127" m="26" mt="44000" p="0" pr="0">
+			<pos m="1" n="1" d="4"/>
+			<dur n="1" d="4"/>
+		</n>
+		<n e="0" l="0" c="0" v="127" m="27" mt="47000" p="0" pr="0">
+			<pos m="1" n="2" d="4"/>
+			<dur n="1" d="4"/>
+		</n>
+		<n e="0" l="0" c="0" v="127" m="28" mt="48000" p="0" pr="0">
+			<pos m="1" n="3" d="4"/>
+			<dur n="1" d="4"/>
+		</n>
+	</notes>
+	<times>
+		<t atm="0" nb="4"/>
+		<t atm="0" nb="4"/>
+		<t atm="0" nb="4"/>
+	</times>
+	<keys>
+		<k atm="0" k="0" m="0"/>
+		<k atm="0" k="0" m="0"/>
+		<k atm="0" k="0" m="0"/>
+	</keys>
+	<markers />
+	<tempos>
+		<t atm="0" bpm="120"/>
+		<t atm="0" bpm="120"/>
+		<t atm="0" bpm="120"/>
+	</tempos>
+	<parts />
+</e>

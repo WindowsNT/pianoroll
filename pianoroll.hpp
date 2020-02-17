@@ -1,5 +1,6 @@
 #include <d2d1.h>
 #include <dwrite.h>
+#include <numeric>
 #pragma comment(lib,"d2d1.lib")
 #pragma comment(lib,"Dwrite.lib")
 #pragma comment(lib,"winmm.lib")
@@ -23,6 +24,22 @@ struct VISUALIZATIONPAINTINGPARAMETERS
 	int Mode = 0; // 0 Video export, 1 Play
 };
 
+#ifdef TURBO_PLAY
+struct VST35EVENTS
+{
+	float Pressure = 0.0f;
+	int NoteExpressionValueID = 0;
+	float NoteExpressionValue = 0.0f;
+	std::wstring NoteExpressionText;
+	unsigned long long ChordItem = 0;
+	std::wstring ChordName;
+	unsigned long long ScaleItem = 0;
+	std::wstring ScaleName;
+	void Ser(XML3::XMLElement& e) const;
+	void Unser(XML3::XMLElement& e);
+	HRESULT Ask(HWND hh, int tcmd);
+};
+#endif
 
 namespace PR
 {
@@ -230,6 +247,88 @@ namespace PR
 		,L"Open Triangle"
 	};
 
+
+	static float MidiToFrequency(int m)
+	{
+		float fr = 16.35f * pow(2.0f, (float)(m / 12.0f));
+		return fr;
+	}
+
+
+
+	static void ShiftValToML(float F, float F2, __int8* MSB, __int8* LSB)
+	{
+	/*
+
+	The Weber-Fechner rule: f2 = f1*(2^(x/k))
+	K = 49152 (4096 per semitone - midi)
+	x = K/(log2(f2/f1))
+
+
+	*/
+		float PB = 0;
+		float XX = 0;
+
+		XX = 49152.0f * (log((float)F / F2) / log(2.0f));
+		PB = XX;//(8192.0/72.0)*XX;
+		unsigned int APB = 8192; // Zero-midi PItch
+		APB += (unsigned int)PB;
+		*MSB = (char)(APB >> 7);
+		*LSB = (char)(APB & 0x7F);
+	}
+
+
+	static int FreqToMidi2(float F, __int8* midi, __int8* MSB, __int8* LSB)
+	{
+		float left = 0, right = 0;
+		int i1 = 0;
+		for (int i = 1; i < 127; i++)
+		{
+			float mf = MidiToFrequency(i + 1);
+			if (mf < F)
+				continue;
+			left = MidiToFrequency(i);
+			right = mf;
+			if (F == left) // exact
+			{
+				*midi = (__int8)i;
+				ShiftValToML(F, left, MSB, LSB);
+				return 1;
+			}
+			if (F == right) // exact
+			{
+				*midi = (__int8)i + 1;
+				ShiftValToML(F, right, MSB, LSB);
+				return 1;
+			}
+			i1 = i;
+			break;
+		}
+		if (left == 0 || right == 0)
+			return 0;
+		if ((F - left) < (right - F))
+		{
+		//Closer to left
+			*midi = (__int8)i1;
+			ShiftValToML(F, left, MSB, LSB);
+		}
+		else
+		{
+		// Closer to right
+			*midi = (__int8)i1 + 1;
+			ShiftValToML(F, right, MSB, LSB);
+		}
+		return 1;
+	}
+
+
+
+	static std::tuple<__int8, __int8, __int8> FrequencyToMidi(float f)
+	{
+		std::tuple<__int8, __int8, __int8> e = std::make_tuple<__int8, __int8, __int8>(0,0,0);
+		FreqToMidi2(f, &std::get<0>(e), &std::get<1>(e), &std::get<2>(e));
+		return e;
+	}
 
 	class MIDI
 	{
@@ -567,7 +666,7 @@ namespace PR
 				m += TrackSize;
 				}
 			if (pm)
-				*pm = m - mididata;
+				*pm = (int)(m - mididata);
 			return S_OK;
 		}
 
@@ -1184,6 +1283,7 @@ namespace PR
 	public:
 
 		int midi = 0;
+		int micro = 0;
 		int Selected = 0;
 		POSITION p;
 		FRACTION d;
@@ -1203,7 +1303,9 @@ namespace PR
 		vector<unsigned char> MetaEventData;
 
 		// And VST 3.5 events
-		float VST35_Pressure = 0.0f;
+#ifdef TURBO_PLAY
+		VST35EVENTS vst35;
+#endif
 
 		D2D1_RECT_F dr;
 
@@ -1214,8 +1316,13 @@ namespace PR
 			e.vv("c").SetValueInt(ch);
 			e.vv("v").SetValueInt(vel);
 			e.vv("m").SetValueInt(midi);
+			e.vv("mt").SetValueInt(micro);
 			e.vv("p").SetValueULongLong(part);
 			e.vv("pr").SetValueInt(preset);
+
+#ifdef TURBO_PLAY
+			vst35.Ser(e["vst35"]);
+#endif
 
 			if (HasMetaEvent)
 			{
@@ -1233,6 +1340,7 @@ namespace PR
 			ch = e.vv("c").GetValueInt();
 			vel = e.vv("v").GetValueInt();
 			midi = e.vv("m").GetValueInt();
+			micro = e.vv("mt").GetValueInt();
 			nonote = e.vv("e").GetValueUInt();
 			part = e.vv("p").GetValueULongLong(0);
 			preset = e.vv("pr").GetValueInt(0);
@@ -1245,6 +1353,10 @@ namespace PR
 				MetaEventData.resize(b.size());
 				memcpy(MetaEventData.data(), b.p(), b.size());
 			}
+
+#ifdef TURBO_PLAY
+			vst35.Unser(e["vst35"]);
+#endif
 
 			p.Unser(e["pos"]);
 			d.Unser(e["dur"]);
@@ -1715,7 +1827,7 @@ namespace PR
 		class DRAWNNOTES
 		{
 		public:
-			int n;
+			int n = 0; // If Microtunal, this is index to mtn
 			D2D1_RECT_F full;
 		};
 		vector<DRAWNNOTES> DrawedNotes;
@@ -1746,8 +1858,17 @@ namespace PR
 		int DefPianoVelocity = 127;
 		int DefPianoChannel = 0;
 		int FirstNote = 48;
+		int FirstNoteMTIndex = 0;
 		float ScrollX = 0;
 		int PianoOnly = 0; // If 1, only the piano will be drawn
+
+		std::vector<int> MicrotonalNotes = {};// { 0, 6, 18, 6, 12, 6, 18, 6 }; // normally {}
+		struct MTN
+		{
+			int X = 0;
+			D2D1_RECT_F drawn = {};
+		};
+		vector<MTN> mtn; // Microtontal Notes created
 
 		TOOL Tool = TOOL::AUTO; // 0 Auto, 1 Eraser, 2 Single entry, 3 Quantizer
 		bool PartMode = false;
@@ -1777,6 +1898,10 @@ namespace PR
 		size_t LastNoteOverIdx = (size_t)-1;
 		size_t LastBeatOverIdx = (size_t)-1;
 		POSITION LastOverHP;
+
+#ifdef TURBO_PLAY
+		void NoteExpressionCommandTP(int tcmd);
+#endif
 
 		map<size_t,PART> parts;
 		vector<NOTE> notes;
@@ -2091,8 +2216,12 @@ namespace PR
 
 		void Ser(XML3::XMLElement& e) const
 		{
+			auto& mtt = e["mt"];
+			for (auto& mt : MicrotonalNotes)
+				mtt.AddElement2("n")->vv("v").SetValueInt(mt);
 
 			e.vv("FirstNote").SetValueInt(FirstNote);
+			e.vv("FirstNoteMTIndex").SetValueInt(FirstNoteMTIndex);
 
 			// Side Perc
 			e.vv("SideWidth").SetValueInt(side.Width);
@@ -2154,8 +2283,14 @@ namespace PR
 
 		void Unser(XML3::XMLElement& e)
 		{
+			MicrotonalNotes.clear();
+			
+			auto& mtt = e["mt"];
+			for (auto& mt : mtt)
+				MicrotonalNotes.push_back(mt.vv("v").GetValueInt());
 
 			FirstNote = e.vv("FirstNote").GetValueInt(48);
+			FirstNoteMTIndex = e.vv("FirstNoteMTIndex").GetValueInt(0);
 
 			// Side Perc
 			side.Width = e.vv("SideWidth").GetValueInt(150);
@@ -2650,10 +2785,6 @@ namespace PR
 					}
 				}
 #endif
-				if (n.VST35_Pressure > 0)
-				{
-
-				}
 				if (n.HasMetaEvent)
 				{
 					MIDI::MIDIITEM it1;
@@ -2691,6 +2822,28 @@ namespace PR
 					continue;
 				}
 
+				int midi = n.midi;
+				if (n.micro)
+				{
+					float fr = 16.35f * pow(2.0f, n.micro / 12000.0f);
+					auto e = FrequencyToMidi(fr);
+					midi = std::get<0>(e);
+					MIDI::MIDIITEM it1;
+					it1.stridx = in;
+					it1.sfpreset = n.preset;
+					it1.event = 0;
+					DWORD ps = 0x0000E0;
+					ps |= std::get<1>(e) << 16;
+					ps |= std::get<2>(e) << 8;
+					it1.event = ps;
+					it1.event |= n.ch;
+					it1.ti.abs = 0;
+					if (streamf || uSR)
+						s[0].push_back(it1);
+					else
+						s[n.layer + 1].push_back(it1);
+				}
+
 				MIDI::MIDIITEM it1; 
 				it1.stridx = in;
 				it1.sfpreset = n.preset;
@@ -2698,7 +2851,7 @@ namespace PR
 				it1.event = 0x90;
 				it1.event |= n.ch;
 				it1.event |= (n.vel << 16);
-				it1.event |= (n.midi << 8);
+				it1.event |= (midi << 8);
 				it1.ti.abs = 0; 
 
 				// Find absolute time 
@@ -2943,6 +3096,21 @@ namespace PR
 			if (didx)
 				*didx = (size_t)-1;
 			return np;
+		}
+
+		signed int MicrotuneHitTest(float height)
+		{
+			for (size_t i = 0 ; i < mtn.size() ; i++)
+			{
+				auto& e = mtn[i];
+				auto& dd = e.drawn;
+				if (dd.top > height)
+					continue;
+				if (dd.bottom < height)
+					continue;
+				return (signed int)i;
+			}
+			return -1;
 		}
 
 		int MidiHitTest(float height,size_t* pidx = 0)
@@ -3913,6 +4081,14 @@ namespace PR
 			}
 			if (ww == VK_UP)
 			{
+				if (!MicrotonalNotes.empty())
+				{
+					if (FirstNoteMTIndex < (mtn.size() - 1))
+						FirstNoteMTIndex++;
+					Redraw();
+					return;
+				}
+
 				if (FirstNote >= 110)
 					return;
 				FirstNote++;
@@ -3923,6 +4099,14 @@ namespace PR
 			}
 			if (ww == VK_DOWN)
 			{
+				if (!MicrotonalNotes.empty())
+				{
+					if (FirstNoteMTIndex > 0)
+						FirstNoteMTIndex--;
+					Redraw();
+					return;
+				}
+
 				if (FirstNote <= 0)
 					return;
 				FirstNote--;
@@ -4121,48 +4305,78 @@ namespace PR
 					{
 						KEY k = KeyAtMeasure(n.p.m);
 						NOTE nn = n;
-						if ((ww == VK_ADD || ww == VK_OEM_PLUS))
+
+						if (!MicrotonalNotes.empty())
 						{
-							if (Shift)
-								nn.midi++;
-							else
+							int X = nn.micro;
+							for (size_t i = 0; i < mtn.size(); i++)
 							{
-								for (;;)
+								if (mtn[i].X == X)
 								{
-									nn.midi++;
-									if (k.BelongsToScale(nn.midi))
-										break;
+									if ((ww == VK_ADD || ww == VK_OEM_PLUS))
+									{
+										if (mtn.size() > (i + 1))
+										{
+											nn.micro = mtn[i + 1].X;
+										}
+									}
+									if ((ww == VK_SUBTRACT || ww == VK_OEM_MINUS))
+									{
+										if (i > 0)
+										{
+											nn.micro = mtn[i - 1].X;
+										}
+									}
 								}
 							}
 						}
-						if ((ww == VK_SUBTRACT || ww == VK_OEM_MINUS))
-							if (Shift)
-								nn.midi--;
-							else
+						else
+						{
+							if ((ww == VK_ADD || ww == VK_OEM_PLUS))
 							{
-								for (;;)
+								if (Shift)
+									nn.midi++;
+								else
 								{
-									nn.midi--;
-									if (k.BelongsToScale(nn.midi))
-										break;
+									for (;;)
+									{
+										nn.midi++;
+										if (k.BelongsToScale(nn.midi))
+											break;
+									}
 								}
 							}
-						if (nn.midi < 0)
-							nn.midi = 0;
-						if (nn.midi > 127)
-							nn.midi = 127;
-						if (n.midi == nn.midi)
-							continue;
+							if ((ww == VK_SUBTRACT || ww == VK_OEM_MINUS))
+								if (Shift)
+									nn.midi--;
+								else
+								{
+									for (;;)
+									{
+										nn.midi--;
+										if (k.BelongsToScale(nn.midi))
+											break;
+									}
+								}
+							if (nn.midi < 0)
+								nn.midi = 0;
+							if (nn.midi > 127)
+								nn.midi = 127;
+							if (n.midi == nn.midi)
+								continue;
+						}
 						for (auto c : cb)
 						{
 							if (FAILED(c->OnNoteChange(this, &n, &nn)))
 								return;
 						}
+
 						if (!U)
 							PushUndo();
 						U = true;
 						R = true;
 						n.midi = nn.midi;
+						n.micro = nn.micro;
 					}
 				}
 				if (!R)
@@ -4575,14 +4789,31 @@ namespace PR
 				nx.p.m = hp.m;
 				nx.p.f = hp.f;
 
-				int np = MidiHitTest((float)yy);
-				nx.midi = np;
-				for (auto c : cb)
+				if (!MicrotonalNotes.empty())
 				{
-					if (FAILED(c->OnNoteChange(this, NoteDragging, &nx)))
-						return;
+					auto ce = MicrotuneHitTest((float)yy);
+					if (ce >= 0)
+					{
+						nx.micro = mtn[ce].X;
+						for (auto c : cb)
+						{
+							if (FAILED(c->OnNoteChange(this, NoteDragging, &nx)))
+								return;
+						}
+						*NoteDragging = nx;
+					}
 				}
-				*NoteDragging = nx;
+				else
+				{
+					int np = MidiHitTest((float)yy);
+					nx.midi = np;
+					for (auto c : cb)
+					{
+						if (FAILED(c->OnNoteChange(this, NoteDragging, &nx)))
+							return;
+					}
+					*NoteDragging = nx;
+				}
 				Redraw();
 			}
 
@@ -4774,9 +5005,12 @@ namespace PR
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
 				AppendMenu(m, MF_STRING, 3, L"Move Down\t-");
 				AppendMenu(m, MF_STRING, 2, L"Move Up\t+");
-				AppendMenu(m, MF_SEPARATOR, 0, L"");
-				AppendMenu(m, MF_STRING, 67, L"Chromatically Move Down\tShift -");
-				AppendMenu(m, MF_STRING, 68, L"Chromatically Move Up\tShift +");
+				if (MicrotonalNotes.empty())
+				{
+					AppendMenu(m, MF_SEPARATOR, 0, L"");
+					AppendMenu(m, MF_STRING, 67, L"Chromatically Move Down\tShift -");
+					AppendMenu(m, MF_STRING, 68, L"Chromatically Move Up\tShift +");
+				}
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
 				AppendMenu(m, MF_STRING, 11, L"Velocity Down\t<");
 				AppendMenu(m, MF_STRING, 12, L"Velocity Up\t>");
@@ -4800,13 +5034,21 @@ namespace PR
 				AppendMenu(m, MF_STRING, 73, L"+1/2\t'");
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
 				AppendMenu(m, MF_STRING, 66, L"Quantize\tCtrl+Q");
-				AppendMenu(m, MF_STRING, 74, L"Diatonic Transpose\tCtrl+T");
-				AppendMenu(m, MF_STRING, 75, L"Chromatic Transpose\tCtrl+Shift+T");
+				if (MicrotonalNotes.empty())
+				{
+					AppendMenu(m, MF_STRING, 74, L"Diatonic Transpose\tCtrl+T");
+					AppendMenu(m, MF_STRING, 75, L"Chromatic Transpose\tCtrl+Shift+T");
+				}
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
+#ifdef TURBO_PLAY
 				auto m2 = CreatePopupMenu();
 				AppendMenu(m, MF_STRING | MF_POPUP, (UINT_PTR)m2, L"VST 3.5 Expressions");
 				AppendMenu(m2, MF_STRING, 201, L"Pressure");
-
+				AppendMenu(m2, MF_STRING, 202, L"Note Expression Value");
+				AppendMenu(m2, MF_STRING, 203, L"Note Expression Text");
+				AppendMenu(m2, MF_STRING, 204, L"Chord");
+				AppendMenu(m2, MF_STRING, 205, L"Scale");
+#endif
 
 				POINT p;
 				GetCursorPos(&p);
@@ -4815,41 +5057,12 @@ namespace PR
 					tcmd = TrackPopupMenu(m, TPM_CENTERALIGN | TPM_RETURNCMD, p.x, p.y, 0, hParent, 0);
 				DestroyMenu(m);
 
-				if (tcmd == 201)
+#ifdef TURBO_PLAY
+				if (tcmd == 201 || tcmd == 202 || tcmd == 203 || tcmd == 204 || tcmd == 205)
 				{
-
-					vector<wchar_t> re(1000);
-					if (!AskText(hParent, L"Pressure", L"Enter pressure (0.0 -  1.0):", re.data()))
-						return;
-
-					float val = _wtof(re.data());
-					if (val < 0 || val > 1)
-						val = 0;
-
-					bool R = false, U = false;
-					for (auto& n : notes)
-					{
-						if (n.layer != NextLayer)
-							continue;
-						if (n.Selected || n.PartSelected(parts))
-						{
-							NOTE nn = n;
-							nn.VST35_Pressure = val;
-							for (auto c : cb)
-							{
-								if (FAILED(c->OnNoteChange(this, &n, &nn)))
-									return;
-							}
-							if (!U)
-								PushUndo();
-							U = true;
-							R = true;
-							n.VST35_Pressure = nn.VST35_Pressure;
-						}
-					}
-					if (R)
-						Redraw();
+					NoteExpressionCommandTP(tcmd);
 				}
+#endif
 				if (tcmd == 1)
 				{
 					KeyDown(VK_DELETE, 0);
@@ -5004,11 +5217,14 @@ namespace PR
 				if (true)
 				{
 					auto m1 = CreatePopupMenu();
-					swprintf_s(re, L"Key Set (Current: %i)\t", k.k);
-					AppendMenu(m1, MF_STRING, 1, re);
-					AppendMenu(m1, MF_STRING, 2, L"Mode Major");
-					AppendMenu(m1, MF_STRING, 3, L"Mode Minor");
-					AppendMenu(m1, MF_SEPARATOR, 0, L"");
+					if (MicrotonalNotes.empty())
+					{
+						swprintf_s(re, L"Key Set (Current: %i)\t", k.k);
+						AppendMenu(m1, MF_STRING, 1, re);
+						AppendMenu(m1, MF_STRING, 2, L"Mode Major");
+						AppendMenu(m1, MF_STRING, 3, L"Mode Minor");
+						AppendMenu(m1, MF_SEPARATOR, 0, L"");
+					}
 					swprintf_s(re, L"Tempo Set (Current: %i)\t", tx.BpM);
 					AppendMenu(m1, MF_STRING, 64, re);
 					AppendMenu(m1, MF_SEPARATOR, 0, L"");
@@ -5031,9 +5247,13 @@ namespace PR
 				{
 					auto mx = CreatePopupMenu();
 					AppendMenu(mx, MF_STRING, 113, L"Side");
-					AppendMenu(mx, MF_STRING, 114, L"Bottom");
+					if (MicrotonalNotes.empty())
+						AppendMenu(mx, MF_STRING, 114, L"Bottom");
 					AppendMenu(mx, MF_STRING, 115, L"Off");
-					AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)mx, L"Piano");
+					if (MicrotonalNotes.empty())
+						AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)mx, L"Piano");
+					else
+						AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)mx, L"Microtone Indicators");
 					AppendMenu(m, MF_SEPARATOR, 0, L"");
 				}
 
@@ -5617,14 +5837,20 @@ namespace PR
 
 			auto e1 = fromMidi ? get<0>(*fromMidi) : MeasureAndBarHitTest(LOWORD(ll));
 			auto e2 = fromMidi ? get<1>(*fromMidi) : MidiHitTest(HIWORD(ll));
-			if (e1.m != -1 && e2 > 0)
+			if (Control && e2 <= 0)
+				e2 = 1;
+			int e3 = -1;
+			if (!MicrotonalNotes.empty() && !Control)
+				e3 = MicrotuneHitTest(HIWORD(ll));
+
+			if (e1.m != -1 && (e2 > 0 || e3 >= 0))
 			{
 				auto msr = DrawnMeasureByIndex(e1.m);
 				if (!msr)
 					return;
+
 				// Insert note
 				NOTE nx;
-
 				if (Control && Shift)
 				{
 					nx.vel = 127;
@@ -5739,6 +5965,8 @@ namespace PR
 				}
 				nx.midi = e2;
 				nx.p.m = e1.m;
+				if (e3 >= 0)
+					nx.micro = mtn[e3].X;
 				nx.p.f = e1.f;
 				if (noteres < 0)
 				{
@@ -5871,8 +6099,65 @@ namespace PR
 			}
 		}
 
+		void PaintMicrotunalSide(ID2D1RenderTarget* p, RECT rc)
+		{
+			if (side.Width == 0)
+			{
+				side.full = D2D1_RECT_F({});
+				return;
+			}
+			int dirx = Direction;
+			if (dirx == 0)
+			{
+				side.full.left = (FLOAT)rc.left;
+				side.full.top = (FLOAT)rc.top;
+				side.full.bottom = (FLOAT)rc.bottom;
+				side.full.right = (FLOAT)side.Width;
+			}
+			else
+			if (dirx == 1)
+			{
+				side.full.left = (FLOAT)(rc.right - side.Width);
+				side.full.top = (FLOAT)rc.top;
+				side.full.bottom = (FLOAT)rc.bottom;
+				side.full.right = (FLOAT)rc.right;
+			}
+
+//			p->FillRectangle(side.full, SideBrush);
+			wchar_t ly[100] = { 0 };
+			Text->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+			Text->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+			int SumOct = std::accumulate(MicrotonalNotes.begin(), MicrotonalNotes.end(), 0);
+
+			for (size_t i = 0; i < mtn.size(); i++)
+			{
+				auto& e = mtn[i];
+				if (e.drawn.right == 0)
+					continue;
+
+				auto dx = side.full;
+				dx.top = e.drawn.top;
+				dx.bottom = e.drawn.bottom;
+				int di = (int)(e.X % 12000);
+				// in 12000 , di
+				// in SumOct , ?
+				int dx4 = (di * SumOct) / 12000;
+				swprintf_s(ly, 100, L"+%i",dx4);
+				p->DrawTextW(ly, (UINT32)wcslen(ly), Text, dx, WhiteBrush);
+			}
+
+
+
+		}
+
 		void PaintSide(ID2D1RenderTarget * p, RECT rc)
 		{
+			if (!MicrotonalNotes.empty())
+			{
+				PaintMicrotunalSide(p, rc);
+				return;
+			}
+
 			CreateBrushes(p,0,0);
 			// dirx  0 left 1 right
 			DrawnPiano.clear();
@@ -6366,6 +6651,33 @@ namespace PR
 		}
 		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel, bool Mut, D2D1_COLOR_F* utc, VISUALIZATIONPAINTINGPARAMETERS* vpp = 0);
 
+		void BuildMicrotonalNotes(std::vector<MTN>& T)
+		{
+			// Say, 	std::vector<int> MicrotonalNotes = { 0,6,18,6,12,6,18,6 };
+			int SumOct = std::accumulate(MicrotonalNotes.begin(), MicrotonalNotes.end(),0);
+
+			int C0 = 0;
+			int nid = 0;
+			int px = -1;
+			for (;;)
+			{
+				int next = MicrotonalNotes[nid];
+				int X = C0 + (next*12000)/SumOct;
+				if (X > 127 * 1000)
+					break;
+				
+				MTN m;
+				m.X = X;
+				if (px != X)
+					T.push_back(m);
+				px = X;
+				C0 = X;
+				nid++;
+				if (nid >= MicrotonalNotes.size())
+					nid = 0;
+
+			}
+		}
 
 		void Paint(ID2D1RenderTarget * p, RECT rc, unsigned long long param = 0)
 		{
@@ -6400,44 +6712,96 @@ namespace PR
 			// Background
 			p->Clear(bg);
 
-
 			// Lines
 			DrawedNotes.clear();
-			for (auto c1 = FirstNote ; ; c1++)
+
+			if (!MicrotonalNotes.empty())
 			{
-				if (c1 > 128)
-					break;
-				auto e = NotePos(c1);
-				if (Direction == 0) // Down to up
-				{
-					if (e.top < rc.top)
-						break;
-				}
-				else
-				{
-					if (e.bottom > rc.bottom)
-						break;
-				}
-				// Paint only the up part
-				D2D1_POINT_2F p1, p2;
-				p1.x = e.left;
-				p1.y = e.top;
-				p2.x = e.right;
-				p2.y = e.top;
-				if ((c1 % 12) == 11 && Direction == 0)
-					p->DrawLine(p1, p2, LineBrush,2.0f);
-				else
-				if ((c1 % 12) == 0 && Direction == 1)
-					p->DrawLine(p1, p2, LineBrush, 2.0f);
-				else
-					p->DrawLine(p1, p2, LineBrush, 1.0f);
+				if (mtn.empty())
+					BuildMicrotonalNotes(mtn);
 
-				DRAWNNOTES dn;
-				dn.full = e;
-				dn.n = c1;
-				DrawedNotes.push_back(dn);
+				float NoteHeight = Heights.empty() ? 20.0f : Heights[0].nh;
+				float NoteBottomX = (FLOAT)rdr.bottom;
+
+				int PrevX = 0;
+				for (auto& e : mtn)
+					e.drawn = {};
+
+				// Direction Left
+				for (auto c1 = FirstNoteMTIndex  ; c1 < mtn.size() ; c1++)
+				{
+					// Paint only the up part
+					NoteBottomX -= NoteHeight;
+
+					auto& mm = mtn[c1];
+					D2D1_POINT_2F p1, p2;
+					D2D1_RECT_F d = {};
+					d.left = (FLOAT)rdr.left;
+					d.right = (FLOAT)rdr.right;
+					d.top = NoteBottomX;
+					d.bottom = NoteBottomX + NoteHeight;
+					mm.drawn = d;
+
+					int CurX = mm.X/ 12000;
+					p1.x = d.left;
+					p1.y = d.bottom;
+					p2.x = d.right;
+					p2.y = d.bottom;
+					if (CurX != PrevX)
+					{
+						PrevX = CurX;
+						p->DrawLine(p1, p2, LineBrush, 2.0f);
+					}
+					else
+						p->DrawLine(p1, p2, LineBrush, 1.0f);
+
+					DRAWNNOTES dn;
+					dn.full = d;
+					dn.n = c1; // This is index
+					DrawedNotes.push_back(dn);
+
+					if (d.top < 0)
+						break;
+				}
+
 			}
+			else
+			{
+				for (auto c1 = FirstNote; ; c1++)
+				{
+					if (c1 > 128)
+						break;
+					auto e = NotePos(c1);
+					if (Direction == 0) // Down to up
+					{
+						if (e.top < rc.top)
+							break;
+					}
+					else
+					{
+						if (e.bottom > rc.bottom)
+							break;
+					}
+					// Paint only the up part
+					D2D1_POINT_2F p1, p2;
+					p1.x = e.left;
+					p1.y = e.top;
+					p2.x = e.right;
+					p2.y = e.top;
+					if ((c1 % 12) == 11 && Direction == 0)
+						p->DrawLine(p1, p2, LineBrush, 2.0f);
+					else
+						if ((c1 % 12) == 0 && Direction == 1)
+							p->DrawLine(p1, p2, LineBrush, 2.0f);
+						else
+							p->DrawLine(p1, p2, LineBrush, 1.0f);
 
+					DRAWNNOTES dn;
+					dn.full = e;
+					dn.n = c1;
+					DrawedNotes.push_back(dn);
+				}
+			}
 
 			// Measures
 			TotalWidthForMusic = 0;
@@ -6583,11 +6947,38 @@ namespace PR
 				f.right = f.left + (bw * DENOM * n.d.r());
 
 				// Find the note
-				if (n.midi < FirstNote)
+				DRAWNNOTES* ddn = 0;
+				if (n.micro && !MicrotonalNotes.empty())
+				{
+					int lidx = -1;
+					for (size_t idx = 0; idx < mtn.size(); idx++)
+					{
+						if (mtn[idx].X == n.micro)
+						{
+							lidx = (int)idx;
+							break;
+						}
+					}
+					for (auto& dn : DrawedNotes)
+					{
+						if (dn.n == lidx)
+						{
+							ddn = &dn;
+							break;
+						}
+					}
+				}
+				else
+				{
+					if (n.midi < FirstNote)
+						continue;
+					if ((n.midi - FirstNote) >= (int)DrawedNotes.size())
+						continue;
+					ddn = &DrawedNotes[n.midi - FirstNote];
+				}
+				if (!ddn)
 					continue;
-				if ((n.midi - FirstNote) >= (int)DrawedNotes.size())
-					continue;
-				auto & dn = DrawedNotes[n.midi - FirstNote];
+				auto& dn = *ddn;
 
 				// Adjust
 				f.top = dn.full.top;
@@ -6768,7 +7159,7 @@ namespace PR
 					f4.bottom = f.bottom - 13;
 
 					wchar_t ly[100] = { 0 };
-					if (n.nonote == 0 && !n.HasMetaEvent)
+					if (n.nonote == 0 && !n.HasMetaEvent && n.micro == 0)
 					{
 						KEY k = KeyAtMeasure(n.p.m);
 						MidiNoteName(ly, n.midi, k.k, k.m);
@@ -6841,9 +7232,21 @@ namespace PR
 							Text->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
 							wchar_t ly[100] = { 0 };
-							KEY k = KeyAtMeasure(DrawnMeasures[LastBeatOverIdx].im);
-							MidiNoteName(ly, LastNoteOver, k.k, k.m);
-
+							if (!MicrotonalNotes.empty())
+							{
+								auto& mi = mtn[DrawedNotes[LastNoteOverIdx].n];
+								int di = (int)(mi.X % 12000);
+								// in 12000 , di
+								// in SumOct , ?
+								int SumOct = std::accumulate(MicrotonalNotes.begin(), MicrotonalNotes.end(), 0);
+								int dx4 = (di * SumOct) / 12000;
+								swprintf_s(ly, 100, L"+%i", dx4);
+							}
+							else
+							{
+								KEY k = KeyAtMeasure(DrawnMeasures[LastBeatOverIdx].im);
+								MidiNoteName(ly, LastNoteOver, k.k, k.m);
+							}
 							p->DrawTextW(ly, (UINT32)wcslen(ly), Text, r, WhiteBrush);
 						}
 					}
