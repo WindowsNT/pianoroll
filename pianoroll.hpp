@@ -896,6 +896,7 @@ namespace PR
 		virtual HRESULT OnNoteSelect(PIANOROLL* pr, NOTE* oldn, bool) = 0;
 		virtual void OnPianoOn(PIANOROLL*, int n,int vel,int ch) = 0;
 		virtual void OnPianoOff(PIANOROLL*, int off,int ch) = 0;
+		virtual void RequestVSTSFPresetList(std::unordered_map<int, std::wstring>& n) = 0;
 	};
 
 
@@ -1862,7 +1863,6 @@ namespace PR
 		float ScrollX = 0;
 		int PianoOnly = 0; // If 1, only the piano will be drawn
 
-		std::vector<int> MicrotonalNotes = {};// { 0, 6, 18, 6, 12, 6, 18, 6 }; // normally {}
 		struct MTN
 		{
 			int X = 0;
@@ -1994,7 +1994,9 @@ namespace PR
 
 	public:
 
-
+		int& GetNextPreset() { return NextPreset;  }
+		std::vector<int> MicrotonalNotes = {};// { 0, 6, 18, 6, 12, 6, 18, 6 }; // normally {}
+//		std::vector<int> MicrotonalNotes =  { 0, 6, 20, 4, 12, 6, 20, 4 };
 		void InsertNoteFromMidiIn(DWORD e)
 		{
 			if (IsNoteOn(e))
@@ -5022,8 +5024,47 @@ namespace PR
 				AppendMenu(m, MF_STRING, 17, L"Layer Down\tAlt+Down");
 				AppendMenu(m, MF_STRING, 18, L"Layer Up\tAlt+Up");
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
-				AppendMenu(m, MF_STRING, 117, L"SF Preset Down\tShift+Alt+Down");
+
+
+/*				AppendMenu(m, MF_STRING, 117, L"SF Preset Down\tShift+Alt+Down");
 				AppendMenu(m, MF_STRING, 118, L"SF Preset Up\tShift+Alt+Up");
+				AppendMenu(m, MF_STRING, 119, L"SF Preset...");
+*/
+
+				if (true)
+				{
+					auto m7 = CreatePopupMenu();
+					wchar_t re[1000] = { 0 };
+					swprintf_s(re, L"Up\tShift+Alt+Up");
+					AppendMenu(m7, MF_STRING, 117, re);
+					swprintf_s(re, L"Down\tShift+Alt+Down");
+					AppendMenu(m7, MF_STRING, 118, re);
+					swprintf_s(re, L"Value...");
+					AppendMenu(m7, MF_STRING, 119, re);
+
+					unordered_map<int, wstring> str2;
+					for (auto& c : cb)
+						c->RequestVSTSFPresetList(str2);
+					AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)m7, L"SoundFont Preset");
+					AppendMenu(m, MF_SEPARATOR, 0, L"");
+
+					if (!str2.empty())
+					{
+						AppendMenu(m7, MF_SEPARATOR, 0, L"");
+						for (size_t h = 0; h <= str2.size(); h++)
+						{
+							if (h == 0)
+								swprintf_s(re, 1000, L"0.(No change)");
+							else
+								swprintf_s(re, 1000, L"%zi.%s", h, str2[(int)(h - 1)].c_str());
+							AppendMenu(m7, MF_STRING | ((h % 32) == 0 && h > 0 ? MF_MENUBARBREAK : 0), 25001 + h, re);
+						}
+					}
+				}
+
+
+
+
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
 				AppendMenu(m, MF_STRING, 13, L"Expand\t/");
 				AppendMenu(m, MF_STRING, 14, L"Reduce\t\\");
@@ -5155,6 +5196,50 @@ namespace PR
 				{
 					KeyDown(VK_UP, true, true, false, true);
 				}
+				if (tcmd == 119)
+				{
+					vector<wchar_t> re(1000);
+					if (!AskText(hParent, L"Preset", L"Enter Soundfont Preset:", re.data()))
+						return;
+					int pr = _wtoi(re.data());
+					if (pr < 0)
+						pr = 0;
+					bool R = false, U = false;
+					for (auto& n : notes)
+					{
+						if (n.layer != NextLayer)
+							continue;
+						if (n.Selected || n.PartSelected(parts))
+						{
+							if (!U)
+								PushUndo();
+							U = true;
+							n.preset = pr;
+						}
+					}
+					if (R)
+						Redraw();
+				}
+				if (tcmd >= 25001)
+				{
+					int np = tcmd - 25001;
+					bool R = false, U = false;
+					for (auto& n : notes)
+					{
+						if (n.layer != NextLayer)
+							continue;
+						if (n.Selected || n.PartSelected(parts))
+						{
+							if (!U)
+								PushUndo();
+							U = true;
+							n.preset = np;
+						}
+					}
+					if (R)
+						Redraw();
+				}
+
 				if (tcmd == 21)
 				{
 					// Velocity entry
@@ -5337,16 +5422,40 @@ namespace PR
 				swprintf_s(re, L"Set next channel (Current: %i)\t", NextChannel + 1);
 				AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)m6, re);
 				auto m7 = CreatePopupMenu();
+
+
 				swprintf_s(re, L"Up\tShift+Alt+Up");
 				AppendMenu(m7, MF_STRING, 773, re);
 				swprintf_s(re, L"Down\tShift+Alt+Down");
 				AppendMenu(m7, MF_STRING, 774, re);
+				swprintf_s(re, L"Value...");
+				AppendMenu(m7, MF_STRING, 775, re);
+
+				unordered_map<int, wstring> str2;
+				for (auto& c : cb)
+					c->RequestVSTSFPresetList(str2);
 				if(NextPreset == 0)
 					swprintf_s(re, L"Set next soundfont preset (Current: Default)");
 				else
 					swprintf_s(re, L"Set next soundfont preset (Current: %i)", NextPreset);
 				AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)m7, re);
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
+
+				if (!str2.empty())
+				{
+					AppendMenu(m7, MF_SEPARATOR, 0, L"");
+					for (size_t h = 0; h <= str2.size(); h++)
+					{
+						if (h == 0)
+							swprintf_s(re, 1000, L"0.(No change)");
+						else
+							swprintf_s(re, 1000, L"%zi.%s", h, str2[(int)(h - 1)].c_str());
+						AppendMenu(m7, MF_STRING | ((h % 32) == 0 && h > 0 ? MF_MENUBARBREAK : 0), 25001 + h, re);
+						if (NextPreset == h)
+							CheckMenuItem(m7, (UINT)(h + 25001), MF_CHECKED);
+					}
+				}
+
 
 
 				if (true)
@@ -5374,6 +5483,12 @@ namespace PR
 					tcmd = TrackPopupMenu(m, TPM_CENTERALIGN | TPM_RETURNCMD, p.x, p.y, 0, hParent, 0);
 				DestroyMenu(m);
 
+				if (tcmd >= 25001)
+				{
+					NextPreset = tcmd - 25001;
+					return;
+				}
+
 				if (tcmd == 771 && NextChannel < 15)
 				{
 					NextChannel++;
@@ -5390,7 +5505,16 @@ namespace PR
 				{
 					NextPreset--;
 				}
-
+				if (tcmd == 775)
+				{
+					vector<wchar_t> re(1000);
+					if (!AskText(hParent, L"Preset", L"Enter Soundfont Preset:", re.data()))
+						return;
+					int pr = _wtoi(re.data());
+					if (pr < 0)
+						pr = 0;
+					NextPreset = pr;
+				}
 
 /*				if (tcmd ==  999)
 					{
@@ -5989,6 +6113,11 @@ namespace PR
 				if (LongEvent)
 					nx.d.n = 4;
 
+				nx.preset = NextPreset;
+				nx.ch = NextChannel;
+				nx.layer = NextLayer;
+				nx.part = NextPart;
+
 				for (auto c : cb)
 				{
 					if (FAILED(c->NoteAdded(this, &nx)))
@@ -5997,10 +6126,6 @@ namespace PR
 				if (!U)
 					PushUndo();
 				U = true;
-				nx.preset = NextPreset;
-				nx.ch = NextChannel;
-				nx.layer = NextLayer;
-				nx.part = NextPart;
 
 				if (Control && Shift)
 				{
@@ -6659,9 +6784,10 @@ namespace PR
 			int C0 = 0;
 			int nid = 0;
 			int px = -1;
+			int next = 0;
 			for (;;)
 			{
-				int next = MicrotonalNotes[nid];
+				next += MicrotonalNotes[nid];
 				int X = C0 + (next*12000)/SumOct;
 				if (X > 127 * 1000)
 					break;
@@ -6671,7 +6797,6 @@ namespace PR
 				if (px != X)
 					T.push_back(m);
 				px = X;
-				C0 = X;
 				nid++;
 				if (nid >= MicrotonalNotes.size())
 					nid = 0;
