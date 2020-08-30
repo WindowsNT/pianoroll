@@ -7,12 +7,29 @@
 #include <atlbase.h>
 #include ".\\xml\\xml3all.h"
 
+#ifndef TURBO_PLAY
+template <typename T>
+using shared = std::shared_ptr<T>; 
+#define make_shared_debug make_shared
+#endif
+
 // Todo
 /*
 	Split
 	Transpose
 	Legato/Staccato
 */
+
+
+struct PRVISUALIZATIONPARAMETERS
+{
+	int NumMeasures = 2;
+	int ShowNotes = 0;
+	int ShowVelocities = 0;
+	void Edit(HWND hh);
+	void Ser(XML3::XMLElement& e) const;
+	void Unser(XML3::XMLElement& e);
+};
 
 struct VISUALIZATIONPAINTINGPARAMETERS
 {
@@ -369,12 +386,17 @@ namespace PR
 			int sfpreset = 0;
 			char ff = 0;
 			vector<unsigned char> data; // For FF
-			std::shared_ptr<void> anydata;
+			shared<void> anydata;
 			char VST3Event[48] = {};
 			bool operator <(const MIDIITEM& m2) const
 			{
 				if (ti.abs < m2.ti.abs)
 					return true;
+				if (ti.abs == m2.ti.abs)
+				{
+					if (data.empty() && m2.data.empty() == false)
+						return true; // notes come before non-notes
+				}
 				return false;
 			}
 
@@ -897,6 +919,13 @@ namespace PR
 		virtual void OnPianoOn(PIANOROLL*, int n,int vel,int ch) = 0;
 		virtual void OnPianoOff(PIANOROLL*, int off,int ch) = 0;
 		virtual void RequestVSTSFPresetList(std::unordered_map<int, std::wstring>& n) = 0;
+
+#ifdef ENABLE_SHARED_PTR_DEBUG
+		virtual ~PIANOROLLCALLBACK()
+		{
+		}
+#endif
+
 	};
 
 
@@ -1262,7 +1291,7 @@ namespace PR
 	class PART
 	{
 	public:
-		D2D1_RECT_F full;
+		D2D1_RECT_F full = {};
 		wstring n;
 		bool S = false;
 
@@ -1293,7 +1322,7 @@ namespace PR
 		int preset = 0;
 		int layer = 0;
 		size_t part = 0;
-		std::shared_ptr<void> any;
+		shared<void> any;
 
 		// And a non note event
 		DWORD nonote = 0;
@@ -1305,6 +1334,7 @@ namespace PR
 
 		// And VST 3.5 events
 #ifdef TURBO_PLAY
+		int PreviousLayerForCombineEdit = 0;
 		VST35EVENTS vst35;
 #endif
 
@@ -1588,14 +1618,14 @@ namespace PR
 		}
 
 		HWND hParent = 0;
-		vector<shared_ptr<PIANOROLLCALLBACK>> cb;
+		vector<shared<PIANOROLLCALLBACK>> cb;
 
 
 		class SIDEDRAW
 		{
 		public:
 			int Width = 120;
-			D2D1_RECT_F full;
+			D2D1_RECT_F full = {};
 
 		};
 
@@ -1612,14 +1642,14 @@ namespace PR
 		{
 		public:
 			signed int he = 15;
-			D2D1_RECT_F full;
+			D2D1_RECT_F full = {};
 		};
 
 		class INFODRAW
 		{
 		public:
 			signed int he = 15;
-			D2D1_RECT_F full;
+			D2D1_RECT_F full = {};
 		};
 
 		class HEIGHT
@@ -1673,7 +1703,7 @@ namespace PR
 		class KEY
 		{
 		public:
-			wchar_t t[50];
+			wchar_t t[50] = {};
 			size_t atm = 0; // at measure
 			signed int k = 0; // -7 to +7
 			int m = 0; // 0 major 1 minor
@@ -1794,14 +1824,14 @@ namespace PR
 		class DRAWNBEAT
 		{
 		public:
-			D2D1_RECT_F full;
+			D2D1_RECT_F full = {};
 		};
 
 		class DRAWNMEASURESANDBEATS
 		{
 		public:
 			size_t im = 0;
-			D2D1_RECT_F full;
+			D2D1_RECT_F full = {};
 			vector<DRAWNBEAT> Beats;
 		};
 		vector<DRAWNMEASURESANDBEATS> DrawnMeasures;
@@ -1810,7 +1840,7 @@ namespace PR
 		{
 		public:
 			int m = 0;
-			D2D1_RECT_F full;
+			D2D1_RECT_F full = {};
 		};
 		vector<DRAWPIANO> DrawnPiano;
 
@@ -1829,7 +1859,7 @@ namespace PR
 		{
 		public:
 			int n = 0; // If Microtunal, this is index to mtn
-			D2D1_RECT_F full;
+			D2D1_RECT_F full = {};
 		};
 		vector<DRAWNNOTES> DrawedNotes;
 
@@ -1929,7 +1959,7 @@ namespace PR
 		int NextPreset = 0;
 		int NextLayer = 0;
 		int NextPart = 0;
-		shared_ptr<NOTE> GroupDragging = 0;
+		shared<NOTE> GroupDragging = 0;
 		NOTE * NoteDragging = 0;
 		NOTE * NoteResizing = 0;
 		NOTE NoteResizingSt;
@@ -2029,6 +2059,10 @@ namespace PR
 			}
 		}
 
+#ifdef TURBO_PLAY
+		PRVISUALIZATIONPARAMETERS visParams;
+#endif
+
 		vector<TIME>& GetTimes() {
 			return Times; }
 		vector<TEMPO>& GetTempos() { return Tempos; }
@@ -2088,9 +2122,9 @@ namespace PR
 				// br 3 = sel nm
 				// br 4 = sel m
 				D2D1_COLOR_F col = *utc;
-				col.a = 0.80f;
+				col.a = 1.0f;
 				NoteBrush2 = GetD2SolidBrush(p, col);
-				col.a = 0.60f;
+				col.a = 0.40f;
 				NoteBrush1 = GetD2SolidBrush(p, col);
 				col.a = 0.40f;
 				NoteBrush4 = GetD2SolidBrush(p, col);
@@ -2280,6 +2314,9 @@ namespace PR
 				auto& nn = pa.AddElement("p");
 				p.second.Ser(p.first,nn);
 			}
+#ifdef TURBO_PLAY
+			visParams.Ser(e["vis"]);
+#endif
 
 		}
 
@@ -2354,6 +2391,9 @@ namespace PR
 				PART p;
 				parts[(size_t)p.Unser(eee)] = p;
 			}
+#ifdef TURBO_PLAY
+			visParams.Unser(e["vis"]);
+#endif
 
 			Redraw();
 		}
@@ -2709,7 +2749,7 @@ namespace PR
 			std::sort(notes.begin(), notes.end());
 		}
 
-		void ToMidi(vector<unsigned char>& v, int TPB = 960, std::function<HRESULT(MIDI::MIDIITEM& m)> streamf = nullptr, std::vector<MIDI::MIDIITEM>* mmap = 0,int uSR = 0,bool NO = false,std::vector<std::vector<MIDI::MIDIITEM>>* mmore = 0)
+		void ToMidi(vector<unsigned char>& v, int TPB = 960, std::function<HRESULT(MIDI::MIDIITEM& m)> streamf = nullptr, std::vector<MIDI::MIDIITEM>* mmap = 0,int uSR = 0,bool NO = false,std::vector<std::vector<MIDI::MIDIITEM>>* mmore = 0,bool Measure0TempoOnly = true)
 		{
 			MIDI m;
 			map<int, vector<MIDI::MIDIITEM>> s;
@@ -2738,7 +2778,12 @@ namespace PR
 					ps.m = k.atm;
 					auto ti = AbsF(ps);
 					it1.ti.abs = ti.ToTpb(TPB);
-					s[0].push_back(it1);
+					if (Measure0TempoOnly && k.atm != 0)
+					{
+
+					}
+					else
+						s[0].push_back(it1);
 				}
 
 				// Times
@@ -2750,7 +2795,6 @@ namespace PR
 					ps.m = k.atm;
 					auto ti = AbsF(ps);
 					it1.ti.abs = ti.ToTpb(TPB);
-					s[0].push_back(it1);
 				}
 
 				// Markers
@@ -2990,7 +3034,7 @@ namespace PR
 		}
 
 
-		vector<shared_ptr<PIANOROLLCALLBACK>>& Callbacks() { return cb; }
+		vector<shared<PIANOROLLCALLBACK>>& Callbacks() { return cb; }
 
 
 		void DestroyCallbacks()
@@ -2998,7 +3042,7 @@ namespace PR
 			cb.clear();
 		}
 
-		void AddCallback(shared_ptr<PIANOROLLCALLBACK> c)
+		void AddCallback(shared<PIANOROLLCALLBACK> c)
 		{
 			cb.push_back(c);
 		}
@@ -4483,38 +4527,77 @@ namespace PR
 				n.p.m++;
 			}
 		}
-
 		void Quantize(NOTE& n)
 		{
-			float x = PositionToX(n.p);
-			if (x < 0)
+			// Is it too much left?
+			float xp = PositionToX(n.p);
+			if (xp < 0)
 				return;
-			auto e1 = MeasureAndBarHitTest(x);
-			n.p = e1;
-
-			// Position
 			auto end = n.EndX();
 			float x2 = PositionToX(end);
 			if (x2 < 0)
 				return;
+
+			// Quantize the position
+			auto e1 = MeasureAndBarHitTest(xp);
 			auto e2 = MeasureAndBarHitTest(x2);
-			if (e1 == e2)
-				e2.f.n++;
-			auto a1 = AbsF(e1);
-			auto a2 = AbsF(e2);
-			auto d1 = DistanceBetweenAbs(a2, a1);
-			float x42 = PositionToX(e2);
-			e2.f.n++;
-			auto a3 = AbsF(e2);
-			float x43 = PositionToX(e2);
-			auto d2 = DistanceBetweenAbs(a3, a1);
 
+			if (e1 != e2)
+			{
+				// Must choose between starting of e1, or e1 + 1
+				auto e1p = e1;
+				e1p.f.n++;
 
-			if (fabs(x42 - x2) < fabs(x43 - x2))
-				n.d = d1;
+				float diff1 = xp - PositionToX(e1);
+				float diff2 = PositionToX(e1p) - xp;
+
+				if (diff1 <= diff2)
+					n.p = e1;
+				else
+					n.p = e1p;
+
+			}
 			else
-				n.d = d2;
+				n.p = e1;
+
+			// Quantize the duration
+			auto e3 = MeasureAndBarHitTest(PositionToX(end));
+			if (e3 == n.p)
+			{
+				// Same beat, give it
+				auto e3p = e3;
+				e3p.f.n++;
+				auto a1 = AbsF(e3p);
+				auto a2 = AbsF(n.p);
+				auto d1 = DistanceBetweenAbs(a1, a2);
+				n.d = d1;
+			}
+			else
+			{
+				auto e3p = e3;
+				e3p.f.n++;
+				float d1 = PositionToX(end) - PositionToX(e3);
+				float d2 = PositionToX(e3p) - PositionToX(end);
+				if (d1 <= d2)
+				{
+					// smaller
+					auto a1 = AbsF(e3);
+					auto a2 = AbsF(n.p);
+					auto d1a = DistanceBetweenAbs(a1, a2);
+					n.d = d1a;
+				}
+				else
+				{
+					// Larger
+					auto a1 = AbsF(e3p);
+					auto a2 = AbsF(n.p);
+					auto d1a = DistanceBetweenAbs(a1, a2);
+					n.d = d1a;
+				}
+			}
+
 		}
+
 
 		void Paste()
 		{
@@ -4552,7 +4635,7 @@ namespace PR
 		void MouseMove(WPARAM, LPARAM ll)
 		{
 			bool Shift = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0);
-			bool Control = ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
+//			bool Control = ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
 			bool LeftClick = ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
 			int xx = LOWORD(ll);
 			int yy = HIWORD(ll);
@@ -4832,7 +4915,7 @@ namespace PR
 				if (ResizingRight)
 				{
 #ifdef _DEBUG
-					if (Control) DebugBreak();
+//					if (Control) DebugBreak();
 #endif
 					// Enlarge note
 					if (!Shift)
@@ -5507,10 +5590,10 @@ namespace PR
 				}
 				if (tcmd == 775)
 				{
-					vector<wchar_t> re(1000);
-					if (!AskText(hParent, L"Preset", L"Enter Soundfont Preset:", re.data()))
+					vector<wchar_t> re4(1000);
+					if (!AskText(hParent, L"Preset", L"Enter Soundfont Preset:", re4.data()))
 						return;
-					int pr = _wtoi(re.data());
+					int pr = _wtoi(re4.data());
 					if (pr < 0)
 						pr = 0;
 					NextPreset = pr;
@@ -5868,7 +5951,7 @@ namespace PR
 				if (ip != -1)
 				{
 					parts[ip].S = true;
-					GroupDragging = make_shared<NOTE>();
+					GroupDragging = make_shared_debug<NOTE>();
 					GroupDragging->part = ip;
 					auto hp = MeasureAndBarHitTest((float)xx, Shift);
 					GroupDragging->p.m = hp.m;
@@ -6134,6 +6217,8 @@ namespace PR
 					nx.nonote |= (nx.vel << 16);
 					nx.nonote |= (nx.midi << 8);
 				}
+
+				nx.Selected = true;
 
 				notes.push_back(nx);
 				if (fromMidi)

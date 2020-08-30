@@ -90,6 +90,11 @@ public:
 	M()
 	{
 	}
+	virtual void RequestVSTSFPresetList(std::unordered_map<int, std::wstring>&)
+	{
+
+	}
+
 	virtual HRESULT NoteAdded(PIANOROLL*, NOTE* n)
 	{
 		if (n->nonote > 0 || n->HasMetaEvent)
@@ -418,7 +423,11 @@ LRESULT CALLBACK Main_DP(HWND hh, UINT mm, WPARAM ww, LPARAM ll)
 			hp.pixelSize.height = rc.bottom;
 			d.Release();
 
-			fa->CreateHwndRenderTarget(D2D1::RenderTargetProperties(), D2D1::HwndRenderTargetProperties(hh, D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top)), &d);
+			auto props = D2D1::RenderTargetProperties();
+			props.dpiX = 96;
+			props.dpiY = 96;
+
+			fa->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(hh, D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top)), &d);
 		}
 		d->BeginDraw();
 		prx.Paint(d, rc);
