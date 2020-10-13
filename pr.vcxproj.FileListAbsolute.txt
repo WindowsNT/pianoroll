@@ -1,0 +1,2 @@
+F:\TP2\pr\pr.exe
+F:\TP2\pr\pr.pdb

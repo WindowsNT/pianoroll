@@ -20,6 +20,7 @@ using shared = std::shared_ptr<T>;
 	Legato/Staccato
 */
 
+//#define NEW_SNAPRES
 
 struct PRVISUALIZATIONPARAMETERS
 {
@@ -1003,11 +1004,18 @@ namespace PR
 		}
 
 
-		float r()
+		float r(ssize_t mu = 1)
 		{
 			if (!d)
 				return 0; // whops
-			return (float)n / (float)d;
+			return (float)(n*mu) / (float)d;
+		}
+
+		float revr(ssize_t mu = 1)
+		{
+			if (!d)
+				return 0; // whops
+			return (float)(d * mu) / (float)n;
 		}
 
 		void Set(ssize_t nu = 0, ssize_t de = 1)
@@ -1947,7 +1955,11 @@ namespace PR
 		vector<MARKER> Markers;
 		vector<TEMPO> Tempos = { TEMPO() };
 		HCURSOR CursorArrow = 0, CursorResize = 0, CursorSelect = 0,CursorErase = 0,CursorResize4,CursorHand;
+#ifdef NEW_SNAPRES
+		FRACTION snapres2 = { 1,4 };
+#else
 		unsigned int snapres = 1;
+#endif
 		signed int noteres = -1; // bars 
 		SIDEDRAW side;
 		TOPDRAW top;
@@ -2060,7 +2072,8 @@ namespace PR
 		}
 
 #ifdef TURBO_PLAY
-		PRVISUALIZATIONPARAMETERS visParams;
+		std::any visParams;
+		void BuildVisualizationAutomation(void* Part);
 #endif
 
 		vector<TIME>& GetTimes() {
@@ -2256,6 +2269,8 @@ namespace PR
 			for (auto& mt : MicrotonalNotes)
 				mtt.AddElement2("n")->vv("v").SetValueInt(mt);
 
+			e.vv("CurveMode").SetValueInt(AutomationMode);
+
 			e.vv("FirstNote").SetValueInt(FirstNote);
 			e.vv("FirstNoteMTIndex").SetValueInt(FirstNoteMTIndex);
 
@@ -2315,8 +2330,16 @@ namespace PR
 				p.second.Ser(p.first,nn);
 			}
 #ifdef TURBO_PLAY
-			visParams.Ser(e["vis"]);
+//			visParams.Ser(e["vis"]);
 #endif
+
+			// VC
+			for (auto& c : VelocityCurve)
+			{
+				auto& cc = e["vc"].AddElement("i");
+				c.first.Ser(cc["p"]);
+				cc.vv("v").SetValueInt(c.second.j);
+			}
 
 		}
 
@@ -2327,6 +2350,8 @@ namespace PR
 			auto& mtt = e["mt"];
 			for (auto& mt : mtt)
 				MicrotonalNotes.push_back(mt.vv("v").GetValueInt());
+
+			AutomationMode = e.vv("CurveMode").GetValueInt(2);
 
 			FirstNote = e.vv("FirstNote").GetValueInt(48);
 			FirstNoteMTIndex = e.vv("FirstNoteMTIndex").GetValueInt(0);
@@ -2392,8 +2417,18 @@ namespace PR
 				parts[(size_t)p.Unser(eee)] = p;
 			}
 #ifdef TURBO_PLAY
-			visParams.Unser(e["vis"]);
+//			visParams.Unser(e["vis"]);
 #endif
+
+
+			// VC
+			for (auto& eee : e["vc"])
+			{
+				POSITION p;
+				p.Unser(eee["p"]);
+				int j = eee.vv("v").GetValueInt(127);
+				VelocityCurve[p].j = j;
+			}
 
 			Redraw();
 		}
@@ -2896,7 +2931,10 @@ namespace PR
 				it1.event = 0;
 				it1.event = 0x90;
 				it1.event |= n.ch;
-				it1.event |= (n.vel << 16);
+				auto vel = n.vel;
+				if (AutomationMode == 1)
+					vel = (int)((float)VelocityAtCurvePosition(n.p)*127.0f);
+				it1.event |= (vel << 16);
 				it1.event |= (midi << 8);
 				it1.ti.abs = 0; 
 
@@ -3070,7 +3108,7 @@ namespace PR
 		}
 
 
-		ABSPOSITION AbsF(POSITION& p)
+		ABSPOSITION AbsF(const POSITION& p)
 		{
 			ABSPOSITION x;
 			x.beats = AbsMeasure(p.m);
@@ -3121,16 +3159,29 @@ namespace PR
 					}
 					else
 					{
-						size_t TotBeats = dd.Beats.size() * snapres;
-						np.f.d = DENOM * snapres;
+#ifdef NEW_SNAPRES
+						float TotBeats = (dd.Beats.size() * 1.0f/snapres2.r(4));
+						np.f.d = (ssize_t)snapres2.revr();
 						float widthpersnap = (dd.full.right - dd.full.left) / TotBeats;
-						for (size_t nn = 0; nn < TotBeats ; nn++)
+						for (size_t nn = 0; nn < TotBeats; nn++)
+						{
+							if (width >= ((nn * widthpersnap) + dd.full.left))
+								np.f.n = nn;
+							else
+								break;
+					}
+#else
+						size_t TotBeats = (size_t)(dd.Beats.size() * snapres);
+						np.f.d = (ssize_t)(DENOM * snapres);
+						float widthpersnap = (dd.full.right - dd.full.left) / TotBeats;
+						for (size_t nn = 0; nn < TotBeats; nn++)
 						{
 							if (width >= ((nn * widthpersnap) + dd.full.left))
 								np.f.n = nn;
 							else
 								break;
 						}
+#endif
 					}
 
 					if (didx)
@@ -3687,7 +3738,11 @@ namespace PR
 						continue;
 
 					auto e = notes[i].EndX();
-					int U = DENOM * snapres;
+#ifdef NEW_SNAPRES
+					int U = (int)snapres2.r();
+#else
+					int U = (int)(DENOM * snapres);
+#endif
 					if (!R)
 						PushUndo();
 					R = true;
@@ -3766,7 +3821,11 @@ namespace PR
 					if (ww == 'X')
 					{
 						auto tt = TimeAtMeasure(p.m);
-						p.f += FRACTION(1, DENOM*snapres);
+#ifdef NEW_SNAPRES
+						p.f += FRACTION(1, (ssize_t)(snapres2.r()));
+#else
+						p.f += FRACTION(1, (ssize_t)(DENOM * snapres));
+#endif
 						if (tt.nb <= (p.f.n/(p.f.d/DENOM)))
 						{
 							p.m++;
@@ -3775,15 +3834,24 @@ namespace PR
 					}
 					else
 					{
-						p.f -= FRACTION(1, DENOM * snapres);
+#ifdef NEW_SNAPRES
+						p.f += FRACTION(1, (ssize_t)(snapres2.r()));
+#else
+						p.f -= FRACTION(1, (ssize_t)(DENOM * snapres));
+#endif
 						if (p.f.n < 0)
 						{
 							if (p.m > 0)
 							{
 								p.m--;
 								auto tt = TimeAtMeasure(p.m);
+#ifdef NEW_SNAPRES
+								tt.nb *= (ssize_t)snapres2.r(4);
+								p.f = FRACTION(tt.nb - 1, (ssize_t)snapres2.r());
+#else
 								tt.nb *= snapres;
-								p.f = FRACTION(tt.nb - 1, DENOM * snapres);
+								p.f = FRACTION(tt.nb - 1, (ssize_t)(DENOM * snapres));
+#endif
 							}
 							else
 							{
@@ -3867,7 +3935,11 @@ namespace PR
 						continue;
 
 					auto e = notes[i].EndX();
-					int U = DENOM * snapres;
+#ifdef NEW_SNAPRES
+					int U = (int)snapres2.r();
+#else
+					int U = (int)(DENOM * snapres);
+#endif
 					if (!R)
 						PushUndo();
 					R = true;
@@ -3991,7 +4063,12 @@ namespace PR
 			{
 				if (Control)
 				{
+#ifdef NEW_SNAPRES
+//					snapres = (unsigned int)ww - '1' + 1;
+#else
 					snapres = (unsigned int)ww - '1' + 1;
+#endif
+
 					Redraw();
 					return;
 				}
@@ -4625,7 +4702,7 @@ namespace PR
 					n2.part = ep;
 				notes.push_back(n2);
 			}
-
+			 
 			if (PartMode)
 				parts[ep].n = L"";
 			std::sort(notes.begin(), notes.end());
@@ -4639,6 +4716,52 @@ namespace PR
 			bool LeftClick = ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
 			int xx = LOWORD(ll);
 			int yy = HIWORD(ll);
+
+			// Automation
+			if (LeftClick  && AutomationMode == 2 && InRect(VLRect, xx, yy) && bpSel)
+			{
+				POSITION tp;
+				for (auto& b : VelocityBars)
+				{
+					if (b.second.S)
+					{
+						tp = b.first;
+						break;
+					}
+				}
+
+				auto j = y2yr((float)yy);
+				j; // apply to note
+				for (auto& n : notes)
+				{
+					if (n.layer != NextLayer)
+						continue;
+					if (n.p < tp)
+						continue;
+					if (n.p > tp)
+						break;
+					n.Selected = 1;
+					n.vel = j;
+				}
+
+				Redraw();
+				return;
+			}
+			// Automation
+			if (LeftClick && AutomationMode == 1 && InRect(VLRect, xx, yy))
+			{
+				for (auto& b : VelocityCurve)
+				{
+					if (b.second.S)
+					{
+						b.second.j = y2yr((float)yy);
+						break;
+					}
+				}
+				Redraw();
+				return;
+			}
+
 
 
 			if (Tool == TOOL::PAINT && LeftClick)
@@ -5029,6 +5152,17 @@ namespace PR
 				for (auto c : cb)
 					c->OnPianoOff(this, PianoNoteClicked, DefPianoChannel);
 			}
+
+			for (auto& b : VelocityBars)
+			{
+				b.second.S = false;
+			}
+			for (auto& b : VelocityCurve)
+			{
+				b.second.S = false;
+			}
+
+
 			if (NoteResizing || NoteDragging)
 				std::sort(notes.begin(), notes.end());
 			NoteResizing = 0;
@@ -5433,6 +5567,10 @@ namespace PR
 					AppendMenu(mx, MF_STRING, 123, L"Layers/Presets");
 					AppendMenu(mx, MF_STRING, 125, L"Live Notes");
 					AppendMenu(mx, MF_SEPARATOR, 0, L"");
+					AppendMenu(mx, MF_STRING, 126, L"Velocities off");
+					AppendMenu(mx, MF_STRING, 127, L"Curve mode");
+					AppendMenu(mx, MF_STRING, 128, L"Bar mode");
+					AppendMenu(mx, MF_SEPARATOR, 0, L"");
 					AppendMenu(mx, MF_STRING, 124, L"Go to measure...\tCtrl+G");
 					AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)mx, L"View");
 					AppendMenu(m, MF_SEPARATOR, 0, L"");
@@ -5463,36 +5601,62 @@ namespace PR
 
 
 				auto m3 = CreatePopupMenu();
-				swprintf_s(re, L"Resolution /1\tCtrl+1");
+
+#ifdef NEW_SNAPRES
+				swprintf_s(re, L"Full\tCtrl+1");
 				AppendMenu(m3, MF_STRING, 21, re);
-				swprintf_s(re, L"Resolution /2\tCtrl+2");
+				swprintf_s(re, L"Half and dot");
 				AppendMenu(m3, MF_STRING, 22, re);
-				swprintf_s(re, L"Resolution /3\tCtrl+3");
+				swprintf_s(re, L"1/2\tCtrl+2");
 				AppendMenu(m3, MF_STRING, 23, re);
-				swprintf_s(re, L"Resolution /4\tCtrl+4");
+				swprintf_s(re, L"Quarter and dot");
 				AppendMenu(m3, MF_STRING, 24, re);
-				swprintf_s(re, L"Resolution /5\tCtrl+5");
+				swprintf_s(re, L"1/4");
 				AppendMenu(m3, MF_STRING, 25, re);
-				swprintf_s(re, L"Resolution /6\tCtrl+6");
+				swprintf_s(re, L"1/8");
 				AppendMenu(m3, MF_STRING, 26, re);
+				swprintf_s(re, L"Tuple");
+				AppendMenu(m3, MF_STRING, 27, re);
+				swprintf_s(re, L"1/16");
+				AppendMenu(m3, MF_STRING, 28, re);
+				swprintf_s(re, L"1/32");
+				AppendMenu(m3, MF_STRING, 29, re);
+#else
+				swprintf_s(re, L"1/4\tCtrl+1");
+				AppendMenu(m3, MF_STRING, 21, re);
+				swprintf_s(re, L"1/8\tCtrl+2");
+				AppendMenu(m3, MF_STRING, 22, re);
+				swprintf_s(re, L"Tuple\tCtrl+3");
+				AppendMenu(m3, MF_STRING, 23, re);
+				swprintf_s(re, L"1/16\tCtrl+4");
+				AppendMenu(m3, MF_STRING, 24, re);
+				swprintf_s(re, L"/5\tCtrl+5");
+				AppendMenu(m3, MF_STRING, 25, re);
+				swprintf_s(re, L"Sextuple\tCtrl+6");
+				AppendMenu(m3, MF_STRING, 26, re);
+				swprintf_s(re, L"/7\tCtrl+7");
+				AppendMenu(m3, MF_STRING, 27, re);
+				swprintf_s(re, L"1/32\tCtrl+8");
+				AppendMenu(m3, MF_STRING, 28, re);
+#endif
 				AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)m3, L"Snap");
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
 
 
 				auto m4 = CreatePopupMenu();
-				swprintf_s(re, L"1 Beat\t1");
-				AppendMenu(m4, MF_STRING, 31, re);
-				swprintf_s(re, L"2 Beats\t2");
-				AppendMenu(m4, MF_STRING, 32, re);
-				swprintf_s(re, L"3 Beats\t3");
-				AppendMenu(m4, MF_STRING, 33, re);
-				swprintf_s(re, L"4 Beats\t4");
+				swprintf_s(re, L"Full\t4");
 				AppendMenu(m4, MF_STRING, 34, re);
-				swprintf_s(re, L"1/2 Beat\tShift+2");
+				swprintf_s(re, L"Half and dot\t3");
+				AppendMenu(m4, MF_STRING, 33, re);
+				swprintf_s(re, L"1/2\t2");
+				AppendMenu(m4, MF_STRING, 32, re);
+				swprintf_s(re, L"1/4\t1");
+				AppendMenu(m4, MF_STRING, 31, re);
+				swprintf_s(re, L"1/8\tShift+2");
 				AppendMenu(m4, MF_STRING, 42, re);
-				swprintf_s(re, L"1/3 Beat\tShift+3");
+				swprintf_s(re, L"Tuple\tShift+3");
 				AppendMenu(m4, MF_STRING, 43, re);
-				swprintf_s(re, L"1/4 Beat\tShift+4");
+				swprintf_s(re, L"1/16\tShift+4");
 				AppendMenu(m4, MF_STRING, 44, re);
 				AppendMenu(m, MF_POPUP | MF_STRING, (UINT_PTR)m4, L"Next Note size");
 				AppendMenu(m, MF_SEPARATOR, 0, L"");
@@ -5684,9 +5848,22 @@ namespace PR
 					return;
 				}
 
-				if (tcmd >= 21 && tcmd <= 26)
+				if (tcmd >= 21 && tcmd <= 29)
 				{
+#ifdef NEW_SNAPRES
+					if (tcmd == 21) { snapres2.n = 1; snapres2.d = 1; }
+					if (tcmd == 22) { snapres2.n = 3; snapres2.d = 4; }
+					if (tcmd == 23) { snapres2.n = 2; snapres2.d = 4; }
+					if (tcmd == 24) { snapres2.n = 3; snapres2.d = 8; }
+					if (tcmd == 25) { snapres2.n = 1; snapres2.d = 4; }
+					if (tcmd == 26) { snapres2.n = 1; snapres2.d = 8; }
+					if (tcmd == 27) { snapres2.n = 1; snapres2.d = 12; }
+					if (tcmd == 28) { snapres2.n = 1; snapres2.d = 16; }
+					if (tcmd == 29) { snapres2.n = 1; snapres2.d = 32; }
+					//snapres = tcmd - 20;
+#else
 					snapres = tcmd - 20;
+#endif
 					Redraw();
 				}
 				if (tcmd == 31) noteres = -1;
@@ -5752,6 +5929,19 @@ namespace PR
 				{
 					KeyDown('G', 0,0,true);
 				}
+				if (tcmd == 126)
+				{
+					AutomationMode = 0;
+				}
+				if (tcmd == 127)
+				{
+					AutomationMode = 1;
+				}
+				if (tcmd == 128)
+				{
+					AutomationMode = 2;
+				}
+
 
 				if (tcmd == 121)
 				{
@@ -5854,6 +6044,48 @@ namespace PR
 			LastClick.x = xx;
 			LastClick.y = yy;
 			
+			// Automation
+			if (AutomationMode == 2 && InRect(VLRect, xx, yy))
+			{
+				for (auto& c : VelocityBars)
+				{
+					if (InRect(c.second.hit, xx, yy))
+					{
+						for (auto& cc : VelocityBars)
+							cc.second.S = 0;
+						c.second.S = 1;
+						bpSel = &c.second;
+						MouseMove(ww, ll);
+						Redraw();
+						return;
+					}
+				}
+			}
+			if (AutomationMode == 1 && InRect(VLRect, xx, yy))
+			{
+				for (auto& c : VelocityCurve)
+				{
+					if (InRect(c.second.hit, xx, yy))
+					{
+						for (auto& cc : VelocityCurve)
+							cc.second.S = 0;
+						c.second.S = 1;
+						Redraw();
+						return;
+					}
+				}
+				auto p = this->XTOPosition((float)xx,false);
+
+				auto j = y2yr((float)yy);
+				VelocityCurve[p].j = j;
+				for (auto& c : VelocityCurve)
+					c.second.S = 0;
+				VelocityCurve[p].S = 1;
+				Redraw();
+				return;
+		
+			}
+
 			// Bar
 			if (InRect(top.full, xx, yy))
 			{
@@ -6007,6 +6239,26 @@ namespace PR
 			}
 			int xx = LOWORD(ll);
 			int yy = HIWORD(ll);
+
+			// Automation
+			if (AutomationMode == 1 && InRect(VLRect, xx, yy))
+			{
+				for (auto& c : VelocityCurve)
+				{
+					if (InRect(c.second.hit, xx, yy))
+					{
+						Redraw();
+						VelocityCurve.erase(c.first);
+						return;
+					}
+				}
+				return;
+			}
+			if (AutomationMode == 2 && InRect(VLRect, xx, yy))
+			{
+				return;
+			}
+
 
 			if (InRect(side.full, xx, yy) && !fromMidi)
 			{
@@ -6821,7 +7073,7 @@ namespace PR
 
 		}
 
-		float PositionToX(POSITION& p,bool Whole = false)
+		float PositionToX(const POSITION& p,bool Whole = false)
 		{
 			auto msr = DrawnMeasureByIndex(p.m);
 			if (!msr)
@@ -6855,9 +7107,9 @@ namespace PR
 			return f.left;
 		}
 
-		POSITION XTOPosition(float x)
+		POSITION XTOPosition(float x,bool sn = true)
 		{
-			return MeasureAndBarHitTest(x, true);
+			return MeasureAndBarHitTest(x, sn);
 		}
 		void PaintMini(ID2D1RenderTarget* p, D2D1_RECT_F rc, bool Sel, bool Mut, D2D1_COLOR_F* utc, VISUALIZATIONPAINTINGPARAMETERS* vpp = 0);
 
@@ -6887,6 +7139,170 @@ namespace PR
 					nid = 0;
 
 			}
+		}
+
+		struct VELOCITYPOINT
+		{
+			int j = 127;
+			D2D1_RECT_F hit = {};
+			bool S = false;
+		};
+		std::map<POSITION, VELOCITYPOINT> VelocityCurve;
+
+
+		float VelocityAtCurvePosition(POSITION& p)
+		{
+			int St = 0;
+			float V = 1.0f;
+			VELOCITYPOINT p1;
+			POSITION po1;
+			for (auto& pp : VelocityCurve)
+			{
+				if (pp.first < p)
+					continue;
+
+				if (St == 0)
+				{
+					St = 1;
+					p1 = pp.second;
+					po1 = pp.first;
+					continue;
+				}
+				if (pp.first > p && St == 1)
+				{
+					St = 2;
+					auto p2 = pp.second;
+
+					signed int diff = p2.j - p1.j;
+
+ 					ABSPOSITION after = AbsF(pp.first);
+					ABSPOSITION before = AbsF(po1);
+					auto cur = AbsF(p);
+					auto p32 = DistanceBetweenAbs(after,before);
+					auto range = p32.r();
+					
+					auto pthis = DistanceBetweenAbs(before,cur );
+					auto range2 = pthis.r();
+					
+					// in full range, diff change
+					// in range2,   diff ?
+					float ch = diff * range2 / range;
+					ch += p1.j;
+					ch /= 127.0f;
+					V = ch;
+					break;
+				}
+
+			}
+			return V;
+		}
+
+		struct BARPOINT
+		{
+			D2D1_RECT_F hit = {};
+			bool S = false;
+		};
+		std::map<POSITION, BARPOINT> VelocityBars;
+		BARPOINT* bpSel = 0;
+
+		float HeValue = 1.2f;
+
+		float y2y(int j)
+		{
+			float he = (VLRect.bottom - VLRect.top);
+			auto fullh = he / HeValue;
+			// in 127, full
+			// in j ,  ? 
+			auto nh = fullh * (127 - j) / 127;
+			return nh + VLRect.top + (he - fullh)/2.0f;
+		};
+		int y2yr(float yy)
+		{
+			yy -= VLRect.top;
+			float he = (VLRect.bottom - VLRect.top);
+			auto fullh = he / HeValue;
+
+			float he4 = (he - fullh) / 2.0f;
+			if (yy <= he4)
+				return 127;
+			if (yy >= (he - he4))
+				return 0;
+
+			yy -= he4;
+
+			// in 127, full
+			// in ? ,  yy
+			auto nh = 127 * yy / fullh;
+			return (int)(127 - nh);
+		};
+
+		int AutomationMode = 2;
+		D2D1_RECT_F VLRect = {};
+		void PaintAutomationArea(ID2D1RenderTarget* p, D2D1_RECT_F rc)
+		{
+			VLRect = rc;
+			p->FillRectangle(rc, this->WhiteBrush);
+
+			if (AutomationMode == 1)
+			{
+				if (VelocityCurve.empty())
+				{
+					p->DrawLine({ rc.left,y2y(127) }, { rc.right,y2y(127) }, this->BlackBrush, 3);
+				}
+				else
+				{
+					D2D1_POINT_2F pr = { rc.left,y2y(127) };
+					for (auto& c : VelocityCurve)
+					{
+						float xx = PositionToX(c.first);
+						D2D1_POINT_2F p2 = { xx,y2y(c.second.j) };
+						p->DrawLine(pr, p2, this->BlackBrush, 3);
+
+						D2D1_ELLIPSE elp;
+						elp.point = p2;
+						float rad = 10;
+						elp.radiusX = elp.radiusY = rad;
+						p->FillEllipse(elp, c.second.S ? this->LineBrush : BlackBrush);
+						c.second.hit.left = elp.point.x - rad;
+						c.second.hit.top = elp.point.y - rad;
+						c.second.hit.right = elp.point.x + rad;
+						c.second.hit.bottom = elp.point.y + rad;
+
+						pr = p2;
+					}
+				}
+			}
+			if (AutomationMode == 2)
+			{
+				for (auto& n : notes)
+				{
+					if (n.layer != this->NextLayer)
+						continue;
+
+					float xx = PositionToX(n.p);
+					float xx2 = PositionToX(n.EndX());
+					if ((xx2 - xx) > 25)
+						xx2 = xx + 25;
+
+					D2D1_POINT_2F pr = { xx,y2y(n.vel) };
+					D2D1_POINT_2F pr2 = { xx2,y2y(0) };
+					D2D1_ROUNDED_RECT rr;
+					rr.rect.left = pr.x;
+					rr.rect.top = pr.y;
+					rr.rect.right = pr2.x;
+					rr.rect.bottom = pr2.y;
+					rr.rect.right -= (rr.rect.right - rr.rect.left) / 2.0f;
+					rr.radiusX = rr.radiusY = 2;
+
+
+					p->FillRoundedRectangle(rr, n.Selected ? LineBrush : BlackBrush);
+
+					VelocityBars[n.p].hit = rr.rect;
+
+					xx;
+				}
+			}
+			
 		}
 
 		void Paint(ID2D1RenderTarget * p, RECT rc, unsigned long long param = 0)
@@ -7089,15 +7505,27 @@ namespace PR
 					{
 						WasDrown = true;
 						p->DrawLine(p1, p2, LineBrush, ib == (time.nb - 1) ? MeasureStroke : BarStroke);
+#ifdef NEW_SNAPRES
+						if (false && E <= rc.right)
+#else
 						if (snapres > 1 && E <= rc.right)
+#endif
 						{
 							// From StartX to StartX + time.bw, small lines
+#ifdef NEW_SNAPRES
+							float bbw = bw / (float)snapres2.r(4);
+#else
 							float bbw = bw / (float)snapres;
+#endif
 							auto pp1 = p1;
 							auto pp2 = p2;
 							pp1.x -= bw;
 							pp2.x -= bw;
+#ifdef NEW_SNAPRES
+							for (size_t i = 0; i < (snapres2.r(4) - 1); i++)
+#else
 							for (size_t i = 0; i < (snapres - 1); i++)
+#endif
 							{
 								pp1.x += bbw;
 								pp2.x += bbw;
@@ -7199,10 +7627,18 @@ namespace PR
 				fr.rect = f;
 				fr.radiusX = 4.0f;
 				fr.radiusY = 4.0f;
+				auto br = NoteBrush1;
 				if (n.Selected)
-					p->FillRoundedRectangle(fr, NoteBrush2);
-				else
-					p->FillRoundedRectangle(fr, NoteBrush1);
+					br = NoteBrush2;
+				auto c = br->GetOpacity();
+				float nop = n.vel / 90.0f;
+				if (nop > 1.0f)
+					nop = 1.0f;
+				if (nop < 0.25f)
+					nop = 0.25f;
+				br->SetOpacity(nop);
+				p->FillRoundedRectangle(fr, br);
+				br->SetOpacity(c);
 				n.dr = f;
 
 				if (n.HasMetaEvent)
@@ -7479,6 +7915,15 @@ namespace PR
 				p->FillRectangle(SelectRect, this->LineBrush);
 
 			}
+
+			D2D1_RECT_F rc3;
+			rc3.left = (float)rc.left;
+			rc3.top = (float)rc.bottom - 200;
+			rc3.bottom = (float)rc.bottom;
+			rc3.right = (float)rc.right;
+			VLRect = {};
+			if (AutomationMode)	
+				PaintAutomationArea(p, rc3);
 		}
 	};
 }
