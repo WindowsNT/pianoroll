@@ -1913,6 +1913,7 @@ namespace PR
 
 		vector<int> HiddenLayers;
 
+		CComPtr<ID2D1StrokeStyle> dotted;
 		CComPtr<ID2D1SolidColorBrush> SideBrush;
 		CComPtr<ID2D1SolidColorBrush> LineBrush;
 		CComPtr<ID2D1SolidColorBrush> WhiteBrush;
@@ -2091,6 +2092,7 @@ namespace PR
 
 		void DestroyBrushes()
 		{
+			dotted = 0;
 			WhiteBrush = 0;
 			BlackBrush = 0;
 			SideBrush = 0;
@@ -2117,6 +2119,22 @@ namespace PR
 				DestroyBrushes();
 			if (SideBrush && !F)
 				return; // OK
+
+
+			dotted = 0;
+			if (!dotted)
+			{
+				D2D1_STROKE_STYLE_PROPERTIES ssp = {};
+				ssp.lineJoin = D2D1_LINE_JOIN_MITER;
+				ssp.dashStyle = D2D1_DASH_STYLE_DOT;
+				ssp.dashCap = D2D1_CAP_STYLE_ROUND;
+				//			float f[1] = { 1.0f };
+				CComPtr<ID2D1Factory> fa;
+				p->GetFactory(&fa);
+				if (fa)
+					fa->CreateStrokeStyle(ssp, 0, 0, &dotted);
+			}
+
 
 			ForBrushes = p;
 			SideBrush = GetD2SolidBrush(p, sidecolor);
@@ -6049,7 +6067,7 @@ namespace PR
 			{
 				for (auto& c : VelocityBars)
 				{
-					if (InRect(c.second.hit, xx, yy))
+					if (InRect(c.second.fhit, xx, yy))
 					{
 						for (auto& cc : VelocityBars)
 							cc.second.S = 0;
@@ -7200,6 +7218,7 @@ namespace PR
 		struct BARPOINT
 		{
 			D2D1_RECT_F hit = {};
+			D2D1_RECT_F fhit = {};
 			bool S = false;
 		};
 		std::map<POSITION, BARPOINT> VelocityBars;
@@ -7238,10 +7257,12 @@ namespace PR
 
 		int AutomationMode = 2;
 		D2D1_RECT_F VLRect = {};
-		void PaintAutomationArea(ID2D1RenderTarget* p, D2D1_RECT_F rc)
+		void PaintAutomationArea(ID2D1RenderTarget* p, D2D1_RECT_F rc,int mode)
 		{
 			VLRect = rc;
-			p->FillRectangle(rc, this->WhiteBrush);
+			if (mode == 0)
+				p->FillRectangle(rc, this->WhiteBrush);
+
 
 			if (AutomationMode == 1)
 			{
@@ -7251,6 +7272,7 @@ namespace PR
 				}
 				else
 				{
+
 					D2D1_POINT_2F pr = { rc.left,y2y(127) };
 					for (auto& c : VelocityCurve)
 					{
@@ -7274,6 +7296,9 @@ namespace PR
 			}
 			if (AutomationMode == 2)
 			{
+				p->DrawLine({ rc.left,y2y(127) }, { rc.right,y2y(127) }, this->BlackBrush, 1,dotted);
+				p->DrawLine({ rc.left,y2y(0) }, { rc.right,y2y(0) }, this->BlackBrush, 1, dotted);
+
 				for (auto& n : notes)
 				{
 					if (n.layer != this->NextLayer)
@@ -7284,6 +7309,7 @@ namespace PR
 					if ((xx2 - xx) > 25)
 						xx2 = xx + 25;
 
+					D2D1_POINT_2F pr1 = { xx,y2y(127) };
 					D2D1_POINT_2F pr = { xx,y2y(n.vel) };
 					D2D1_POINT_2F pr2 = { xx2,y2y(0) };
 					D2D1_ROUNDED_RECT rr;
@@ -7295,7 +7321,12 @@ namespace PR
 					rr.radiusX = rr.radiusY = 2;
 
 
-					p->FillRoundedRectangle(rr, n.Selected ? LineBrush : BlackBrush);
+					rr.rect.top = pr1.y;
+					p->DrawRoundedRectangle(rr, n.Selected ? LineBrush : NoteBrush3);
+					VelocityBars[n.p].fhit = rr.rect;
+
+					rr.rect.top = pr.y;
+					p->FillRoundedRectangle(rr, n.Selected ? LineBrush : NoteBrush3);
 
 					VelocityBars[n.p].hit = rr.rect;
 
@@ -7457,6 +7488,16 @@ namespace PR
 				LastMeasureWithNote = notes[notes.size() - 1].p.m;
 			}
 
+			VLRect = {};
+			D2D1_RECT_F rc3;
+			rc3.left = (float)rc.left;
+			rc3.top = (float)rc.bottom - 200;
+			rc3.bottom = (float)rc.bottom;
+			rc3.right = (float)rc.right;
+			if (AutomationMode)
+				PaintAutomationArea(p, rc3,0);
+
+
 			for (size_t m = 0; ; m++)
 			{
 				auto time = TimeAtMeasure(m);
@@ -7544,6 +7585,7 @@ namespace PR
 					DrawnMeasures.push_back(dd);
 			}
 
+			
 			// Markers
 			for (auto& m : Markers)
 			{
@@ -7916,14 +7958,9 @@ namespace PR
 
 			}
 
-			D2D1_RECT_F rc3;
-			rc3.left = (float)rc.left;
-			rc3.top = (float)rc.bottom - 200;
-			rc3.bottom = (float)rc.bottom;
-			rc3.right = (float)rc.right;
-			VLRect = {};
-			if (AutomationMode)	
-				PaintAutomationArea(p, rc3);
+			if (AutomationMode)
+				PaintAutomationArea(p, rc3, 1);
+
 		}
 	};
 }
